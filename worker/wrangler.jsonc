@@ -10,6 +10,12 @@
     "binding": "ASSETS",
     "run_worker_first": ["/v1/*", "/healthz"]
   },
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  },
   "d1_databases": [
     {
       "binding": "DB",
