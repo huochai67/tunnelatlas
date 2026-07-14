@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#08110f">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta name="description" content="TunnelAtlas sing-box 隧道注册与发现控制台">
+  <title>TunnelAtlas · 隧图</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="TunnelAtlas 首页">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>TunnelAtlas</strong><small>隧图 · CONTROL PLANE</small></span>
+      </a>
+      <div class="top-actions">
+        <span class="sync-state"><i id="sync-dot"></i><span id="sync-label">等待连接</span></span>
+        <button class="icon-button" id="refresh-button" type="button" aria-label="刷新数据">↻</button>
+        <button class="ghost-button" id="session-button" type="button">连接控制面</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero-row">
+        <div>
+          <p class="eyebrow">LIVE INFRASTRUCTURE</p>
+          <h1>所有隧道，<span>一图掌握。</span></h1>
+          <p class="hero-copy">本机自治运行 sing-box，边缘控制面汇聚状态。这里不转发流量，只呈现真实运行中的路径。</p>
+        </div>
+        <div class="time-panel">
+          <span>CONTROL PLANE TIME</span>
+          <strong id="server-clock">--:--:--</strong>
+          <small id="server-date">未同步</small>
+        </div>
+      </section>
+
+      <section class="metrics-grid" aria-label="运行概况">
+        <article class="metric-card accent">
+          <span>在线 Agent</span><strong id="metric-online">—</strong>
+          <small><i class="status-dot online"></i><span id="metric-total-agents">等待数据</span></small>
+        </article>
+        <article class="metric-card">
+          <span>健康隧道</span><strong id="metric-tunnels">—</strong>
+          <small><i class="status-dot healthy"></i><span id="metric-tunnel-detail">等待数据</span></small>
+        </article>
+        <article class="metric-card">
+          <span>站点</span><strong id="metric-sites">—</strong>
+          <small>隔离与发现边界</small>
+        </article>
+        <article class="metric-card warning-card">
+          <span>需要关注</span><strong id="metric-alerts">—</strong>
+          <small><i class="status-dot warning"></i>离线、陈旧或异常</small>
+        </article>
+      </section>
+
+      <section class="workspace-grid">
+        <article class="panel agents-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">NODES</p><h2>Agent 节点</h2></div>
+            <div class="segmented" id="agent-filter" aria-label="筛选 Agent">
+              <button class="active" data-filter="all" type="button">全部</button>
+              <button data-filter="online" type="button">在线</button>
+              <button data-filter="offline" type="button">异常</button>
+            </div>
+          </div>
+          <div class="agent-list" id="agent-list">
+            <div class="empty-state"><span class="radar"></span><p>连接控制面后显示节点</p></div>
+          </div>
+        </article>
+
+        <aside class="panel enrollment-panel" id="enrollment-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">ENROLLMENT</p><h2>接入新节点</h2></div>
+            <span class="admin-badge">ADMIN</span>
+          </div>
+          <p class="panel-copy">为站点创建一个十分钟内有效、只能使用一次的注册码。</p>
+          <label class="field-label" for="site-select">目标站点</label>
+          <select id="site-select"><option value="">暂无站点</option></select>
+          <button class="primary-button" id="create-token-button" type="button" disabled>生成注册码 <span>→</span></button>
+          <button class="text-button" id="show-site-form" type="button">＋ 创建新站点</button>
+          <form class="site-form hidden" id="site-form">
+            <label>站点 ID<input id="site-id" required pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,127}" placeholder="site-home"></label>
+            <label>显示名称<input id="site-name" required placeholder="家庭机房"></label>
+            <div><button class="small-primary" type="submit">创建</button><button class="small-ghost" id="cancel-site" type="button">取消</button></div>
+          </form>
+          <div class="token-result hidden" id="token-result">
+            <span>一次性注册码</span>
+            <code id="token-value"></code>
+            <div><small id="token-expiry"></small><button id="copy-token" type="button">复制</button></div>
+          </div>
+          <div class="readonly-note hidden" id="readonly-note">当前使用只读令牌，接入操作不可用。</div>
+        </aside>
+      </section>
+
+      <section class="panel tunnel-panel">
+        <div class="panel-heading tunnel-heading">
+          <div><p class="eyebrow">ROUTES</p><h2>sing-box 隧道</h2></div>
+          <div class="table-tools">
+            <label class="search-box"><span>⌕</span><input id="tunnel-search" type="search" placeholder="搜索名称、地址或协议" aria-label="搜索隧道"></label>
+            <select id="site-filter" aria-label="按站点筛选"><option value="all">所有站点</option></select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>状态</th><th>隧道</th><th>方向 / 协议</th><th>端点</th><th>Agent</th><th>最后上报</th></tr></thead>
+            <tbody id="tunnel-table"><tr><td colspan="6" class="table-empty">暂无数据</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer><span>TUNNELATLAS / EDGE REGISTRY</span><span>数据面不经过控制台</span></footer>
+  </div>
+
+  <dialog id="auth-dialog">
+    <form method="dialog" id="auth-form">
+      <div class="dialog-mark"><span></span></div>
+      <p class="eyebrow">CONTROL PLANE ACCESS</p>
+      <h2>连接 TunnelAtlas</h2>
+      <p>输入管理或只读令牌。令牌只保存在当前浏览器标签页，关闭后自动清除。</p>
+      <label class="field-label" for="access-token">访问令牌</label>
+      <input id="access-token" type="password" autocomplete="off" spellcheck="false" placeholder="••••••••••••••••" required>
+      <div class="dialog-error hidden" id="auth-error"></div>
+      <button class="primary-button" value="connect" type="submit">连接控制面 <span>→</span></button>
+      <button class="small-ghost" value="cancel" type="button" id="auth-cancel">取消</button>
+    </form>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

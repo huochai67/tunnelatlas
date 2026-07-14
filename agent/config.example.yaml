@@ -1,0 +1,15 @@
+serverUrl: https://atlas-api.example.com
+agentName: edge-01
+siteId: site-home
+enrollmentToken: replace-with-one-time-token
+reportIntervalSeconds: 60
+labels:
+  region: home
+singBox:
+  binaryPath: /usr/local/bin/sing-box
+  sourceConfigPath: /etc/tunnelatlas/sing-box.json
+  managedConfigPath: /var/lib/tunnelatlas/sing-box.json
+  workingDirectory: /var/lib/tunnelatlas
+  reconcileIntervalSeconds: 5
+  restartDelaySeconds: 5
+  shutdownTimeoutSeconds: 10

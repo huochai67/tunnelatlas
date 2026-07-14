@@ -1,0 +1,22 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "local-socks",
+      "listen": "127.0.0.1",
+      "listen_port": 1080
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "socks",
+      "tag": "upstream",
+      "server": "proxy.example.com",
+      "server_port": 1080
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@tunnelatlas/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify": "pnpm check && pnpm test && pnpm deploy:dry-run",
+    "check": "tsc --noEmit && node --check public/app.js",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "deploy:production": "wrangler d1 migrations apply tunnelatlas --remote && wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply tunnelatlas --local",
+    "db:migrate:remote": "wrangler d1 migrations apply tunnelatlas --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260713.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.25.0"
+  }
+}

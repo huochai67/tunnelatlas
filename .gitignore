@@ -1,0 +1,12 @@
+/target/
+/.local/
+/worker/node_modules/
+/worker/.wrangler/
+/worker/coverage/
+/worker/.dev.vars
+/worker/.env
+/worker/.env.*
+!/worker/.env.example
+*.local
+/agent/*.local.yaml
+/agent/identity*.json
