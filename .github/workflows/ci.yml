@@ -24,6 +24,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Check deployment scripts
+        run: |
+          bash -n deploy/install.sh
+          sh -n deploy/tunnelatlas.initd
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test

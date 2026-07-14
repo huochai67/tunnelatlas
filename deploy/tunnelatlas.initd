@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+name="TunnelAtlas reporting daemon"
+description="Supervises sing-box and reports tunnel state to TunnelAtlas"
+supervisor="supervise-daemon"
+command="/usr/local/bin/tunnelatlasd"
+command_args="run"
+directory="/var/lib/tunnelatlas"
+respawn_delay=5
+respawn_max=0
+required_dirs="/var/lib/tunnelatlas"
+required_files="/etc/tunnelatlas/config.yaml /var/lib/tunnelatlas/identity.json"
+
+depend() {
+  after net firewall
+  use logger dns
+}

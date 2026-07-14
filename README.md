@@ -29,6 +29,21 @@ TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧
 
 见 [本地开发指南](docs/development.md)。生产部署前请先阅读[安全模型](docs/security.md)和[GitHub 与 Cloudflare 自动部署](docs/deployment.md)。
 
+### 一键部署 Agent
+
+先在控制台为目标站点生成一次性注册码，然后在安装了 sing-box 的 Linux 节点上执行（支持 systemd 和 OpenRC）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/huochai67/tunnelatlas/main/deploy/install.sh -o /tmp/tunnelatlas-install.sh
+sudo bash /tmp/tunnelatlas-install.sh \
+  --server-url https://你的-worker-域名 \
+  --site-id site-home \
+  --agent-name edge-01
+rm -f /tmp/tunnelatlas-install.sh
+```
+
+脚本会静默询问注册码，自动识别 x86_64/ARM64 及 systemd/OpenRC、校验并安装最新 Release、注册节点及启用开机服务。sing-box 配置默认读取 `/etc/sing-box/config.json`，可通过 `--sing-box-config` 指定其他路径。由于 sing-box 由 `tunnelatlasd` 监管，脚本会在启动前停用同机已有的 sing-box 服务。再次执行脚本会保留节点配置和身份，仅升级程序并重启服务。
+
 ## 发布 Agent
 
 将 `agent/Cargo.toml` 中的版本提交到 `main` 后，推送同版本的 `vX.Y.Z` 标签会触发 GitHub Actions。流水线通过检查后自动创建 GitHub Release，并附带 Linux x86_64、Linux ARM64 压缩包及 `SHA256SUMS`：
