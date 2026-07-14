@@ -1,0 +1,112 @@
+name: Release agent
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-agent-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check tag and package version
+        shell: bash
+        run: |
+          package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "tunnelatlasd"))')"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$package_version" != "$tag_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match tunnelatlasd version $package_version" >&2
+            exit 1
+          fi
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            platform: x86_64-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            platform: aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install ARM64 linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gcc-aarch64-linux-gnu
+          echo 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc' >> "$GITHUB_ENV"
+          echo 'CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc' >> "$GITHUB_ENV"
+      - name: Build release binary
+        run: cargo build --release --locked --package tunnelatlasd --target "${{ matrix.target }}"
+      - name: Package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="tunnelatlasd-${version}-${{ matrix.platform }}"
+          mkdir -p "dist/$archive"
+          install -m 755 "target/${{ matrix.target }}/release/tunnelatlasd" "dist/$archive/tunnelatlasd"
+          install -m 644 agent/config.example.yaml "dist/$archive/config.example.yaml"
+          install -m 644 agent/sing-box.example.json "dist/$archive/sing-box.example.json"
+          install -m 644 deploy/tunnelatlas.service "dist/$archive/tunnelatlas.service"
+          tar -C dist -czf "dist/$archive.tar.gz" "$archive"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tunnelatlasd-${{ matrix.platform }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: tunnelatlasd-*
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum ./*.tar.gz > SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "TunnelAtlas $GITHUB_REF_NAME" \
+            dist/*.tar.gz dist/SHA256SUMS

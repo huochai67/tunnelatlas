@@ -28,3 +28,14 @@ TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧
 ## 快速开始
 
 见 [本地开发指南](docs/development.md)。生产部署前请先阅读[安全模型](docs/security.md)和[GitHub 与 Cloudflare 自动部署](docs/deployment.md)。
+
+## 发布 Agent
+
+将 `agent/Cargo.toml` 中的版本提交到 `main` 后，推送同版本的 `vX.Y.Z` 标签会触发 GitHub Actions。流水线通过检查后自动创建 GitHub Release，并附带 Linux x86_64、Linux ARM64 压缩包及 `SHA256SUMS`：
+
+```bash
+git tag v0.0.1
+git push origin v0.0.1
+```
+
+标签版本必须与 `tunnelatlasd` 的 Cargo 包版本一致，否则发布会停止。
