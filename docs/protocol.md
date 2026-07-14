@@ -40,7 +40,7 @@ METHOD\nPATH\nTIMESTAMP\nSEQUENCE\nBODY_SHA256
 
 服务端要求时间偏差不超过 5 分钟，并要求 sequence 严格大于该 Agent 已接受的值。Agent 在发送前原子持久化下一个 sequence；请求失败可以跳号，但不能复用。
 
-报告是从 sing-box `inbounds`、`outbounds` 和 `endpoints` 脱敏提取的完整快照，最多包含 64 条隧道，最大 256 KiB。所有字段在写 D1 前校验。
+报告是从 sing-box `inbounds` 提取的完整快照，最多包含 64 条 inbound，最大 256 KiB。`authentication` 仅允许约定的认证字段；所有字段在入库前校验，认证对象再使用 AES-256-GCM 加密。Worker 会忽略旧版 Agent 仍上报的 outbound 和 endpoint，并借助快照清理历史记录。
 
 ## 发现 API
 
@@ -49,7 +49,7 @@ GET /v1/tunnels?siteId=site-home
 Authorization: Bearer <READ_TOKEN>
 ```
 
-返回仍在线且未撤销 Agent 的隧道，最多 1000 条。`ADMIN_TOKEN` 也具有读取权限。
+返回仍在线且未撤销 Agent 的 inbound，最多 1000 条。每项的 `authentication` 包含解密后的认证参数，因此 `READ_TOKEN` 本身属于敏感凭据；`ADMIN_TOKEN` 也具有读取权限。
 
 ## 管理控制台
 

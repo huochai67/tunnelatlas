@@ -1,5 +1,5 @@
 import { authenticateAgent } from "./auth";
-import { randomId, randomToken, sha256Hex } from "./crypto";
+import { decryptJson, encryptJson, randomId, randomToken, sha256Hex } from "./crypto";
 import { bearer, HttpError, json, problem, readJson } from "./http";
 import type { EnrollmentBody, Env, ReportBody } from "./types";
 import { validateEnrollment, validateReport } from "./validation";
@@ -62,23 +62,36 @@ async function report(request: Request, env: Env): Promise<Response> {
   catch { throw new HttpError(400, "Invalid JSON body"); }
   validateReport(body);
   const now = new Date().toISOString();
+  // Accept reports from older agents during rolling upgrades, but persist only
+  // inbound definitions. Outbounds previously stored by an agent are removed by
+  // the snapshot cleanup below.
+  const tunnels = body.tunnels.filter((tunnel) => tunnel.kind === "sing-box/inbound");
+  const encryptedTunnels = await Promise.all(tunnels.map(async (tunnel) => ({
+    tunnel,
+    authenticationCiphertext: await encryptJson(
+      tunnel.authentication ?? {},
+      env.CREDENTIALS_KEY,
+      `${agent.id}:${tunnel.id}`,
+    ),
+  })));
 
   const statements: D1PreparedStatement[] = [
     env.DB.prepare(
       "UPDATE agents SET last_sequence = ?, last_seen_at = ?, agent_version = ?, labels_json = ? WHERE id = ? AND last_sequence < ?",
     ).bind(agent.sequence, now, body.agentVersion, JSON.stringify(body.labels ?? {}), agent.id, agent.sequence),
   ];
-  for (const tunnel of body.tunnels) {
+  for (const { tunnel, authenticationCiphertext } of encryptedTunnels) {
     statements.push(env.DB.prepare(
-      `INSERT INTO tunnels (id, agent_id, site_id, name, kind, endpoint, protocol, status, metadata_json, last_seen_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM agents WHERE id = ? AND last_sequence = ?
+      `INSERT INTO tunnels (id, agent_id, site_id, name, kind, endpoint, protocol, status, metadata_json, authentication_ciphertext, last_seen_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM agents WHERE id = ? AND last_sequence = ?
        ON CONFLICT(agent_id, id) DO UPDATE SET name=excluded.name, kind=excluded.kind,
          endpoint=excluded.endpoint, protocol=excluded.protocol, status=excluded.status,
-         metadata_json=excluded.metadata_json, last_seen_at=excluded.last_seen_at`,
+         metadata_json=excluded.metadata_json, authentication_ciphertext=excluded.authentication_ciphertext,
+         last_seen_at=excluded.last_seen_at`,
     ).bind(tunnel.id, agent.id, agent.site_id, tunnel.name, tunnel.kind, tunnel.endpoint, tunnel.protocol,
-      tunnel.status, JSON.stringify(tunnel.metadata ?? {}), now, agent.id, agent.sequence));
+      tunnel.status, JSON.stringify(tunnel.metadata ?? {}), authenticationCiphertext, now, agent.id, agent.sequence));
   }
-  const ids = body.tunnels.map((tunnel) => tunnel.id);
+  const ids = tunnels.map((tunnel) => tunnel.id);
   if (ids.length === 0) {
     statements.push(env.DB.prepare(
       "DELETE FROM tunnels WHERE agent_id = ? AND EXISTS (SELECT 1 FROM agents WHERE id = ? AND last_sequence = ?)",
@@ -94,6 +107,18 @@ async function report(request: Request, env: Env): Promise<Response> {
   return json({ acceptedSequence: agent.sequence, serverTime: now });
 }
 
+async function tunnelFromRow(row: Record<string, unknown>, env: Env): Promise<Record<string, unknown>> {
+  const authentication = row.authentication_ciphertext
+    ? await decryptJson(String(row.authentication_ciphertext), env.CREDENTIALS_KEY, `${row.agent_id}:${row.id}`)
+    : {};
+  return {
+    id: row.id, agentId: row.agent_id, agentName: row.agent_name, siteId: row.site_id,
+    name: row.name, kind: row.kind, endpoint: row.endpoint, protocol: row.protocol,
+    status: row.status, metadata: JSON.parse(String(row.metadata_json)), authentication,
+    lastSeenAt: row.last_seen_at,
+  };
+}
+
 async function listTunnels(request: Request, env: Env): Promise<Response> {
   const token = bearer(request);
   if (!token || (token !== env.READ_TOKEN && token !== env.ADMIN_TOKEN)) throw new HttpError(401, "Invalid bearer token");
@@ -102,17 +127,13 @@ async function listTunnels(request: Request, env: Env): Promise<Response> {
   const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
   const cutoff = new Date(Date.now() - offlineSeconds * 1000).toISOString();
   const query = `SELECT t.id, t.agent_id, t.site_id, t.name, t.kind, t.endpoint, t.protocol,
-    t.status, t.metadata_json, t.last_seen_at, a.name AS agent_name
+    t.status, t.metadata_json, t.authentication_ciphertext, t.last_seen_at, a.name AS agent_name
     FROM tunnels t JOIN agents a ON a.id = t.agent_id
     WHERE a.revoked_at IS NULL AND a.last_seen_at >= ? ${siteId ? "AND t.site_id = ?" : ""}
     ORDER BY t.site_id, t.name LIMIT 1000`;
   const statement = siteId ? env.DB.prepare(query).bind(cutoff, siteId) : env.DB.prepare(query).bind(cutoff);
   const result = await statement.all<Record<string, unknown>>();
-  const tunnels = result.results.map((row) => ({
-    id: row.id, agentId: row.agent_id, agentName: row.agent_name, siteId: row.site_id,
-    name: row.name, kind: row.kind, endpoint: row.endpoint, protocol: row.protocol,
-    status: row.status, metadata: JSON.parse(String(row.metadata_json)), lastSeenAt: row.last_seen_at,
-  }));
+  const tunnels = await Promise.all(result.results.map((row) => tunnelFromRow(row, env)));
   return json({ tunnels, serverTime: new Date().toISOString() });
 }
 
@@ -130,7 +151,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
     ).all<Record<string, unknown>>(),
     env.DB.prepare(
       `SELECT t.id, t.agent_id, t.site_id, t.name, t.kind, t.endpoint, t.protocol,
-       t.status, t.metadata_json, t.last_seen_at, a.name AS agent_name
+       t.status, t.metadata_json, t.authentication_ciphertext, t.last_seen_at, a.name AS agent_name
        FROM tunnels t JOIN agents a ON a.id = t.agent_id
        WHERE a.revoked_at IS NULL ORDER BY t.site_id, t.name LIMIT 1000`,
     ).all<Record<string, unknown>>(),
@@ -144,11 +165,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
       revokedAt: row.revoked_at, tunnelCount: Number(row.tunnel_count), connectionStatus,
     };
   });
-  const tunnels = tunnelsResult.results.map((row) => ({
-    id: row.id, agentId: row.agent_id, agentName: row.agent_name, siteId: row.site_id,
-    name: row.name, kind: row.kind, endpoint: row.endpoint, protocol: row.protocol,
-    status: row.status, metadata: JSON.parse(String(row.metadata_json)), lastSeenAt: row.last_seen_at,
-  }));
+  const tunnels = await Promise.all(tunnelsResult.results.map((row) => tunnelFromRow(row, env)));
   return json({
     sites: sitesResult.results.map((row) => ({ id: row.id, name: row.name, createdAt: row.created_at })),
     agents,

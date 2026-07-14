@@ -29,6 +29,34 @@ export async function verifyEd25519(publicKey: string, signature: string, messag
   }
 }
 
+async function importCredentialsKey(secret: string): Promise<CryptoKey> {
+  const bytes = base64UrlToBytes(secret);
+  if (bytes.byteLength !== 32) throw new Error("CREDENTIALS_KEY must contain 32 bytes of base64url data");
+  return crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+export async function encryptJson(value: unknown, secret: string, context: string): Promise<string> {
+  const nonce = new Uint8Array(12);
+  crypto.getRandomValues(nonce);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, additionalData: encoder.encode(context) },
+    await importCredentialsKey(secret),
+    encoder.encode(JSON.stringify(value)),
+  );
+  return `v1.${bytesToBase64Url(nonce)}.${bytesToBase64Url(new Uint8Array(ciphertext))}`;
+}
+
+export async function decryptJson(value: string, secret: string, context: string): Promise<unknown> {
+  const [version, nonce, ciphertext, extra] = value.split(".");
+  if (version !== "v1" || !nonce || !ciphertext || extra) throw new Error("Invalid encrypted credentials");
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64UrlToBytes(nonce), additionalData: encoder.encode(context) },
+    await importCredentialsKey(secret),
+    base64UrlToBytes(ciphertext),
+  );
+  return JSON.parse(new TextDecoder().decode(plaintext)) as unknown;
+}
+
 export function randomToken(bytes = 32): string {
   const value = new Uint8Array(bytes);
   crypto.getRandomValues(value);

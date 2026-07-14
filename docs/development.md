@@ -8,7 +8,8 @@ pnpm install
 pnpm db:migrate:local
 pnpm dev -- --var ADMIN_TOKEN:dev-admin \
   --var READ_TOKEN:dev-read \
-  --var ENROLLMENT_PEPPER:dev-pepper
+  --var ENROLLMENT_PEPPER:dev-pepper \
+  --var CREDENTIALS_KEY:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 ```
 
 启动后访问 `http://127.0.0.1:8787/` 打开管理控制台，输入 `dev-admin` 获得管理能力，或输入 `dev-read` 进入只读模式。
@@ -25,7 +26,7 @@ curl -X POST http://127.0.0.1:8787/v1/admin/sites/site-home/enrollment-tokens \
   -H 'Authorization: Bearer dev-admin'
 ```
 
-生产部署前创建 D1 数据库，替换 `worker/wrangler.jsonc` 中的 `database_id`，并用 `wrangler secret put` 分别配置 `ADMIN_TOKEN`、`READ_TOKEN` 和 `ENROLLMENT_PEPPER`。
+生产部署前创建 D1 数据库，替换 `worker/wrangler.jsonc` 中的 `database_id`，并用 `wrangler secret put` 分别配置 `ADMIN_TOKEN`、`READ_TOKEN`、`ENROLLMENT_PEPPER` 和 `CREDENTIALS_KEY`。开发示例中的固定密钥只能用于本地测试。
 
 ## Agent
 

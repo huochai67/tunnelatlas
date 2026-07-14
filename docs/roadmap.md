@@ -10,7 +10,7 @@
 
 - 源配置解析、候选配置、`sing-box check` 和原子替换。
 - sing-box 子进程启动、异常重启、配置变更重启和优雅停止。
-- 从 inbounds、outbounds、endpoints 脱敏发现隧道。
+- 只发现 inbounds，按字段白名单提取认证参数并加密存储。
 
 ## 下一阶段：运行观测
 

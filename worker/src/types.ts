@@ -4,6 +4,7 @@ export interface Env {
   ADMIN_TOKEN: string;
   READ_TOKEN: string;
   ENROLLMENT_PEPPER: string;
+  CREDENTIALS_KEY: string;
   AGENT_OFFLINE_SECONDS?: string;
 }
 
@@ -29,6 +30,7 @@ export interface TunnelBody {
   protocol: string;
   status: "healthy" | "degraded" | "failed" | "unknown" | "stopped";
   metadata?: unknown;
+  authentication?: unknown;
 }
 
 export interface AgentRow {

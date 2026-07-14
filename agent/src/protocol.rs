@@ -47,6 +47,7 @@ pub struct TunnelReport<'a> {
     pub protocol: &'a str,
     pub status: &'a str,
     pub metadata: &'a Value,
+    pub authentication: &'a Value,
 }
 
 impl<'a> From<&'a ObservedTunnel> for TunnelReport<'a> {
@@ -59,6 +60,7 @@ impl<'a> From<&'a ObservedTunnel> for TunnelReport<'a> {
             protocol: &value.protocol,
             status: &value.status,
             metadata: &value.metadata,
+            authentication: &value.authentication,
         }
     }
 }

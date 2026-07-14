@@ -21,20 +21,22 @@ pnpm db:migrate:remote
 
 ## 2. 配置运行时 Secret
 
-在 Cloudflare Dashboard 的 Worker 设置中创建三个加密变量：
+在 Cloudflare Dashboard 的 Worker 设置中创建四个加密变量：
 
 - `ADMIN_TOKEN`：管理控制台、站点和注册码管理权限；
 - `READ_TOKEN`：只读隧道发现权限；
-- `ENROLLMENT_PEPPER`：注册码摘要的服务端 pepper。
+- `ENROLLMENT_PEPPER`：注册码摘要的服务端 pepper；
+- `CREDENTIALS_KEY`：加密 inbound 认证参数的 32 字节 AES 密钥。
 
-三者都应使用独立的高熵随机值。它们是运行时 Secret，不是 Workers Builds 的构建变量，也不能提交到 GitHub。
+四者都应使用独立的高熵随机值。它们是运行时 Secret，不是 Workers Builds 的构建变量，也不能提交到 GitHub。
 
-可以使用 OpenSSL 分别生成三个 256-bit、URL-safe 的随机值：
+可以使用 OpenSSL 分别生成四个 256-bit、URL-safe 的随机值：
 
 ```bash
 ADMIN_TOKEN="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 READ_TOKEN="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 ENROLLMENT_PEPPER="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+CREDENTIALS_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 ```
 
 检查变量已经生成，但不要打印具体值或把它们写入构建日志：
@@ -43,6 +45,7 @@ ENROLLMENT_PEPPER="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
 printf 'ADMIN_TOKEN: %s characters\n' "${#ADMIN_TOKEN}"
 printf 'READ_TOKEN: %s characters\n' "${#READ_TOKEN}"
 printf 'ENROLLMENT_PEPPER: %s characters\n' "${#ENROLLMENT_PEPPER}"
+printf 'CREDENTIALS_KEY: %s characters\n' "${#CREDENTIALS_KEY}"
 ```
 
 通过 Wrangler 写入 Worker Secret。以下命令从标准输入读取值，不会把 Secret 放进命令行参数：
@@ -51,12 +54,13 @@ printf 'ENROLLMENT_PEPPER: %s characters\n' "${#ENROLLMENT_PEPPER}"
 printf '%s' "$ADMIN_TOKEN" | pnpm exec wrangler secret put ADMIN_TOKEN
 printf '%s' "$READ_TOKEN" | pnpm exec wrangler secret put READ_TOKEN
 printf '%s' "$ENROLLMENT_PEPPER" | pnpm exec wrangler secret put ENROLLMENT_PEPPER
+printf '%s' "$CREDENTIALS_KEY" | pnpm exec wrangler secret put CREDENTIALS_KEY
 ```
 
 写入完成后清除当前 Shell 中的变量：
 
 ```bash
-unset ADMIN_TOKEN READ_TOKEN ENROLLMENT_PEPPER
+unset ADMIN_TOKEN READ_TOKEN ENROLLMENT_PEPPER CREDENTIALS_KEY
 ```
 
 ## 3. 连接 GitHub

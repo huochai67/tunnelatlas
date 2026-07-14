@@ -42,6 +42,7 @@ pub struct ObservedTunnel {
     pub protocol: String,
     pub status: String,
     pub metadata: Value,
+    pub authentication: Value,
 }
 
 pub struct SingBoxSupervisor {
@@ -205,20 +206,6 @@ impl SingBoxSupervisor {
             self.status.as_str(),
             &mut tunnels,
         );
-        discover_section(
-            &config,
-            "outbounds",
-            "outbound",
-            self.status.as_str(),
-            &mut tunnels,
-        );
-        discover_section(
-            &config,
-            "endpoints",
-            "endpoint",
-            self.status.as_str(),
-            &mut tunnels,
-        );
         Ok(tunnels)
     }
 
@@ -314,8 +301,40 @@ fn discover_section(
             protocol: protocol.to_owned(),
             status: status.to_owned(),
             metadata: json!({ "direction": direction }),
+            authentication: authentication_of(item),
         });
     }
+}
+
+fn authentication_of(item: &Value) -> Value {
+    const AUTH_FIELDS: &[&str] = &["name", "username", "password", "uuid", "flow", "token"];
+    let mut authentication = serde_json::Map::new();
+    for field in ["method", "password", "token"] {
+        if let Some(value) = item.get(field).and_then(Value::as_str) {
+            authentication.insert(field.to_owned(), Value::String(value.to_owned()));
+        }
+    }
+    if let Some(users) = item.get("users").and_then(Value::as_array) {
+        let filtered = users
+            .iter()
+            .take(32)
+            .filter_map(Value::as_object)
+            .map(|user| {
+                let mut filtered_user = serde_json::Map::new();
+                for field in AUTH_FIELDS {
+                    if let Some(value) = user.get(*field).and_then(Value::as_str) {
+                        filtered_user.insert((*field).to_owned(), Value::String(value.to_owned()));
+                    }
+                }
+                Value::Object(filtered_user)
+            })
+            .filter(|user| user.as_object().is_some_and(|value| !value.is_empty()))
+            .collect::<Vec<_>>();
+        if !filtered.is_empty() {
+            authentication.insert("users".to_owned(), Value::Array(filtered));
+        }
+    }
+    Value::Object(authentication)
 }
 
 fn endpoint_of(item: &Value, direction: &str) -> String {
@@ -380,21 +399,33 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn discovers_without_exposing_credentials() {
+    fn discovers_only_inbounds_with_allowlisted_authentication() {
         let config = json!({
-            "inbounds": [{"type":"socks", "tag":"local", "listen":"127.0.0.1", "listen_port":1080, "users":[{"password":"secret"}]}],
-            "outbounds": [{"type":"vless", "tag":"remote", "server":"example.com", "server_port":443, "uuid":"secret"}]
+            "inbounds": [{
+                "type":"vless", "tag":"public", "listen":"::", "listen_port":443,
+                "users":[{"name":"alice", "uuid":"client-uuid", "flow":"xtls-rprx-vision", "unknown":"ignored"}],
+                "tls":{"reality":{"private_key":"server-private-key", "short_id":["abcd"]}}
+            }, {
+                "type":"shadowsocks", "tag":"ss", "listen":"::", "listen_port":8388,
+                "method":"2022-blake3-aes-128-gcm", "password":"ss-password"
+            }],
+            "outbounds": [{"type":"vless", "tag":"remote", "server":"example.com", "server_port":443, "uuid":"outbound-secret"}],
+            "endpoints": [{"type":"wireguard", "tag":"wg", "private_key":"endpoint-secret"}]
         });
         let mut tunnels = Vec::new();
         discover_section(&config, "inbounds", "inbound", "healthy", &mut tunnels);
-        discover_section(&config, "outbounds", "outbound", "healthy", &mut tunnels);
         assert_eq!(tunnels.len(), 2);
-        assert_eq!(tunnels[1].endpoint, "example.com:443");
-        assert!(
-            !serde_json::to_string(&tunnels[1].metadata)
-                .unwrap()
-                .contains("secret")
+        assert_eq!(tunnels[0].endpoint, "[::]:443");
+        assert_eq!(tunnels[0].authentication["users"][0]["uuid"], "client-uuid");
+        assert_eq!(
+            tunnels[1].authentication["method"],
+            "2022-blake3-aes-128-gcm"
         );
+        assert_eq!(tunnels[1].authentication["password"], "ss-password");
+        let serialized = serde_json::to_string(&tunnels[0].authentication).unwrap();
+        assert!(!serialized.contains("server-private-key"));
+        assert!(!serialized.contains("short_id"));
+        assert!(!serialized.contains("unknown"));
     }
 
     #[tokio::test]
