@@ -29,6 +29,7 @@ pnpm db:migrate:remote
 - `CREDENTIALS_KEY`：加密 inbound 认证参数的 32 字节 AES 密钥。
 
 四者都应使用独立的高熵随机值。它们是运行时 Secret，不是 Workers Builds 的构建变量，也不能提交到 GitHub。
+`worker/wrangler.jsonc` 已启用 `keep_vars`，因此自动部署会保留 Dashboard 中配置的普通变量；Cloudflare 的加密 Secret 本身也不会被常规 `wrangler deploy` 删除。敏感值仍必须选择 **Secret** 类型，不能作为明文变量保存。
 
 可以使用 OpenSSL 分别生成四个 256-bit、URL-safe 的随机值：
 
