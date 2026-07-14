@@ -29,6 +29,36 @@ pnpm db:migrate:remote
 
 三者都应使用独立的高熵随机值。它们是运行时 Secret，不是 Workers Builds 的构建变量，也不能提交到 GitHub。
 
+可以使用 OpenSSL 分别生成三个 256-bit、URL-safe 的随机值：
+
+```bash
+ADMIN_TOKEN="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+READ_TOKEN="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+ENROLLMENT_PEPPER="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+```
+
+检查变量已经生成，但不要打印具体值或把它们写入构建日志：
+
+```bash
+printf 'ADMIN_TOKEN: %s characters\n' "${#ADMIN_TOKEN}"
+printf 'READ_TOKEN: %s characters\n' "${#READ_TOKEN}"
+printf 'ENROLLMENT_PEPPER: %s characters\n' "${#ENROLLMENT_PEPPER}"
+```
+
+通过 Wrangler 写入 Worker Secret。以下命令从标准输入读取值，不会把 Secret 放进命令行参数：
+
+```bash
+printf '%s' "$ADMIN_TOKEN" | pnpm exec wrangler secret put ADMIN_TOKEN
+printf '%s' "$READ_TOKEN" | pnpm exec wrangler secret put READ_TOKEN
+printf '%s' "$ENROLLMENT_PEPPER" | pnpm exec wrangler secret put ENROLLMENT_PEPPER
+```
+
+写入完成后清除当前 Shell 中的变量：
+
+```bash
+unset ADMIN_TOKEN READ_TOKEN ENROLLMENT_PEPPER
+```
+
 ## 3. 连接 GitHub
 
 在 Cloudflare Dashboard 创建或打开名为 `tunnelatlas-api` 的 Worker，然后进入 **Settings → Builds** 连接 GitHub 仓库：

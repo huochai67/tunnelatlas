@@ -19,8 +19,5 @@
   ],
   "vars": {
     "AGENT_OFFLINE_SECONDS": "180"
-  },
-  "limits": {
-    "cpu_ms": 50
   }
 }
