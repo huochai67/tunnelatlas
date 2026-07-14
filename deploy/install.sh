@@ -10,6 +10,22 @@ ENROLLMENT_TOKEN="${TUNNELATLAS_ENROLLMENT_TOKEN:-}"
 unset TUNNELATLAS_ENROLLMENT_TOKEN
 SING_BOX_BINARY="${TUNNELATLAS_SING_BOX_BINARY:-}"
 SING_BOX_CONFIG="${TUNNELATLAS_SING_BOX_CONFIG:-/etc/sing-box/config.json}"
+SING_BOX_INSTALL_MODE="${TUNNELATLAS_SING_BOX_INSTALL_MODE:-auto}"
+SING_BOX_PROTOCOLS="${TUNNELATLAS_SING_BOX_PROTOCOLS:-ss}"
+SING_BOX_HOST=""
+SING_BOX_REALITY_SNI=""
+SING_BOX_SS_METHOD=""
+SING_BOX_SS_PORT=""
+SING_BOX_HY2_PORT=""
+SING_BOX_TUIC_PORT=""
+SING_BOX_REALITY_PORT=""
+SING_BOX_ANYTLS_PORT=""
+SING_BOX_VMESS_PORT=""
+SING_BOX_VMESS_PATH=""
+SING_BOX_VMESS_HOST=""
+
+SING_BOX_DEPLOY_REF="60d479ede494edce840fdab7569a18a20c6fc2ba"
+SING_BOX_DEPLOY_SHA256="06f451545e4c98f0d9171fd812482faecc8a5213a4f58a58ea081f80a6e26ac8"
 
 CONFIG_DIR="/etc/tunnelatlas"
 STATE_DIR="/var/lib/tunnelatlas"
@@ -36,6 +52,23 @@ First-install options:
   --sing-box-config PATH   Source sing-box config (default: /etc/sing-box/config.json)
   --sing-box-binary PATH   sing-box binary (default: auto-detect)
 
+sing-box deployment options:
+  --install-sing-box       Deploy/reinstall sing-box during first TunnelAtlas installation
+  --skip-sing-box-install  Never install sing-box; require an existing binary and config
+  --sing-box-protocols LIST
+                           Protocols: ss,hy2,tuic,reality,anytls,vmess,all (default: ss)
+  --sing-box-host HOST     Public IP or DDNS name used in generated client links
+  --sing-box-reality-sni SNI
+  --sing-box-ss-method METHOD
+  --sing-box-ss-port PORT
+  --sing-box-hy2-port PORT
+  --sing-box-tuic-port PORT
+  --sing-box-reality-port PORT
+  --sing-box-anytls-port PORT
+  --sing-box-vmess-port PORT
+  --sing-box-vmess-path PATH
+  --sing-box-vmess-host HOST
+
 Download options:
   --version VERSION        Release version, with or without v (default: latest)
   --repository OWNER/REPO  GitHub repository
@@ -44,6 +77,8 @@ Download options:
 The enrollment token is read silently from /dev/tty. For unattended installs,
 provide it through TUNNELATLAS_ENROLLMENT_TOKEN instead of a command-line flag.
 An existing installation keeps its config and identity and does not need a token.
+If sing-box or its config is missing, the default behavior deploys a random-port
+Shadowsocks server using the pinned huochai67/singbox-deploy installer.
 EOF
 }
 
@@ -54,6 +89,49 @@ log() {
 die() {
   printf '[tunnelatlas] error: %s\n' "$*" >&2
   exit 1
+}
+
+deploy_sing_box() {
+  local helper="$TMP_DIR/install-singbox-yyds.sh"
+  local helper_url="https://raw.githubusercontent.com/huochai67/singbox-deploy/$SING_BOX_DEPLOY_REF/install-singbox-yyds.sh"
+  local -a helper_args=(--non-interactive --protocols "$SING_BOX_PROTOCOLS" --node-name "$AGENT_NAME")
+
+  log "downloading the pinned sing-box deployment helper"
+  curl -fL --retry 3 --retry-delay 2 -o "$helper" "$helper_url" || die "failed to download the sing-box deployment helper"
+  printf '%s  %s\n' "$SING_BOX_DEPLOY_SHA256" "$helper" | sha256sum -c -s - || die "sing-box deployment helper checksum verification failed"
+  sed -i 's#http://dl-cdn.alpinelinux.org/#https://dl-cdn.alpinelinux.org/#g' "$helper"
+  bash -n "$helper" || die "sing-box deployment helper syntax check failed"
+
+  [[ "$SING_BOX_INSTALL_MODE" == always ]] && helper_args+=(--reinstall)
+  [[ -z "$SING_BOX_HOST" ]] || helper_args+=(--host "$SING_BOX_HOST")
+  [[ -z "$SING_BOX_REALITY_SNI" ]] || helper_args+=(--reality-sni "$SING_BOX_REALITY_SNI")
+  [[ -z "$SING_BOX_SS_METHOD" ]] || helper_args+=(--ss-method "$SING_BOX_SS_METHOD")
+  [[ -z "$SING_BOX_SS_PORT" ]] || helper_args+=(--ss-port "$SING_BOX_SS_PORT")
+  [[ -z "$SING_BOX_HY2_PORT" ]] || helper_args+=(--hy2-port "$SING_BOX_HY2_PORT")
+  [[ -z "$SING_BOX_TUIC_PORT" ]] || helper_args+=(--tuic-port "$SING_BOX_TUIC_PORT")
+  [[ -z "$SING_BOX_REALITY_PORT" ]] || helper_args+=(--reality-port "$SING_BOX_REALITY_PORT")
+  [[ -z "$SING_BOX_ANYTLS_PORT" ]] || helper_args+=(--anytls-port "$SING_BOX_ANYTLS_PORT")
+  [[ -z "$SING_BOX_VMESS_PORT" ]] || helper_args+=(--vmess-port "$SING_BOX_VMESS_PORT")
+  [[ -z "$SING_BOX_VMESS_PATH" ]] || helper_args+=(--vmess-path "$SING_BOX_VMESS_PATH")
+  [[ -z "$SING_BOX_VMESS_HOST" ]] || helper_args+=(--vmess-host "$SING_BOX_VMESS_HOST")
+
+  bash "$helper" "${helper_args[@]}"
+  log "sing-box deployment helper completed"
+}
+
+install_sing_box_binary() {
+  local official_installer="$TMP_DIR/install-sing-box-official.sh"
+
+  if command -v apk >/dev/null 2>&1; then
+    log "installing sing-box from the Alpine Edge community repository"
+    apk update
+    apk add --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community sing-box
+  else
+    log "installing sing-box with the official SagerNet installer"
+    curl -fL --retry 3 --retry-delay 2 -o "$official_installer" https://sing-box.app/install.sh || die "failed to download the official sing-box installer"
+    bash -n "$official_installer" || die "official sing-box installer syntax check failed"
+    bash "$official_installer"
+  fi
 }
 
 install_openrc_service() {
@@ -102,6 +180,20 @@ while [[ $# -gt 0 ]]; do
     --agent-name) [[ $# -ge 2 ]] || die "$1 requires a value"; AGENT_NAME="$2"; shift 2 ;;
     --sing-box-config) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_CONFIG="$2"; shift 2 ;;
     --sing-box-binary) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_BINARY="$2"; shift 2 ;;
+    --install-sing-box) SING_BOX_INSTALL_MODE="always"; shift ;;
+    --skip-sing-box-install) SING_BOX_INSTALL_MODE="never"; shift ;;
+    --sing-box-protocols) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_PROTOCOLS="$2"; shift 2 ;;
+    --sing-box-host) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_HOST="$2"; shift 2 ;;
+    --sing-box-reality-sni) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_REALITY_SNI="$2"; shift 2 ;;
+    --sing-box-ss-method) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_SS_METHOD="$2"; shift 2 ;;
+    --sing-box-ss-port) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_SS_PORT="$2"; shift 2 ;;
+    --sing-box-hy2-port) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_HY2_PORT="$2"; shift 2 ;;
+    --sing-box-tuic-port) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_TUIC_PORT="$2"; shift 2 ;;
+    --sing-box-reality-port) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_REALITY_PORT="$2"; shift 2 ;;
+    --sing-box-anytls-port) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_ANYTLS_PORT="$2"; shift 2 ;;
+    --sing-box-vmess-port) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_VMESS_PORT="$2"; shift 2 ;;
+    --sing-box-vmess-path) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_VMESS_PATH="$2"; shift 2 ;;
+    --sing-box-vmess-host) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_VMESS_HOST="$2"; shift 2 ;;
     --version) [[ $# -ge 2 ]] || die "$1 requires a value"; VERSION="$2"; shift 2 ;;
     --repository) [[ $# -ge 2 ]] || die "$1 requires a value"; REPOSITORY="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -114,6 +206,7 @@ for command in awk chmod curl grep hostname install mktemp mv rm sed sha256sum t
   command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
 done
 [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid GitHub repository: $REPOSITORY"
+[[ "$SING_BOX_INSTALL_MODE" =~ ^(auto|always|never)$ ]] || die "invalid TUNNELATLAS_SING_BOX_INSTALL_MODE"
 
 if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
   INIT_SYSTEM="systemd"
@@ -178,6 +271,7 @@ install -d -m 755 "$CONFIG_DIR" "$STATE_DIR"
 log "installed $($BIN_PATH --version)"
 
 if [[ -f "$CONFIG_PATH" ]]; then
+  [[ "$SING_BOX_INSTALL_MODE" != always ]] || die "--install-sing-box is only supported during the first TunnelAtlas installation"
   [[ -f "$IDENTITY_PATH" ]] || die "$CONFIG_PATH exists but $IDENTITY_PATH is missing; restore the identity or remove the config to enroll again"
   sed -i '/^enrollmentToken:/d' "$CONFIG_PATH"
   log "keeping existing configuration and identity"
@@ -190,11 +284,29 @@ else
   for value in "$SERVER_URL" "$SITE_ID" "$AGENT_NAME" "$SING_BOX_CONFIG"; do
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "configuration values must fit on one line"
   done
-  [[ -f "$SING_BOX_CONFIG" ]] || die "sing-box source config not found: $SING_BOX_CONFIG"
   if [[ -z "$SING_BOX_BINARY" ]]; then
     SING_BOX_BINARY="$(command -v sing-box || true)"
   fi
+
+  if [[ "$SING_BOX_INSTALL_MODE" == always ]]; then
+    if [[ -f "$SING_BOX_CONFIG" ]]; then
+      install -m 600 "$SING_BOX_CONFIG" "$SING_BOX_CONFIG.pre-tunnelatlas"
+      log "backed up the existing sing-box config to $SING_BOX_CONFIG.pre-tunnelatlas"
+    fi
+    deploy_sing_box
+    SING_BOX_BINARY="$(command -v sing-box || true)"
+  elif [[ "$SING_BOX_INSTALL_MODE" == auto && ! -f "$SING_BOX_CONFIG" ]]; then
+    [[ "$SING_BOX_CONFIG" == /etc/sing-box/config.json ]] || die "automatic sing-box config generation only supports /etc/sing-box/config.json"
+    deploy_sing_box
+    SING_BOX_BINARY="$(command -v sing-box || true)"
+  elif [[ "$SING_BOX_INSTALL_MODE" == auto && ( -z "$SING_BOX_BINARY" || ! -x "$SING_BOX_BINARY" ) ]]; then
+    install_sing_box_binary
+    SING_BOX_BINARY="$(command -v sing-box || true)"
+  fi
+
+  [[ -f "$SING_BOX_CONFIG" ]] || die "sing-box source config not found: $SING_BOX_CONFIG"
   [[ -n "$SING_BOX_BINARY" && -x "$SING_BOX_BINARY" ]] || die "sing-box binary not found; install it or pass --sing-box-binary"
+  chmod 600 "$SING_BOX_CONFIG"
 
   if [[ -z "$ENROLLMENT_TOKEN" ]]; then
     [[ -r /dev/tty ]] || die "no terminal is available; set TUNNELATLAS_ENROLLMENT_TOKEN"
