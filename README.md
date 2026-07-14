@@ -64,8 +64,8 @@ sudo bash /tmp/tunnelatlas-install.sh \
 将 `agent/Cargo.toml` 中的版本提交到 `main` 后，推送同版本的 `vX.Y.Z` 标签会触发 GitHub Actions。流水线通过检查后自动创建 GitHub Release，并附带 Linux x86_64、Linux ARM64 的 glibc/musl 压缩包及 `SHA256SUMS`：
 
 ```bash
-git tag v0.0.3
-git push origin v0.0.3
+git tag v0.0.5
+git push origin v0.0.5
 ```
 
 标签版本必须与 `tunnelatlasd` 的 Cargo 包版本一致，否则发布会停止。
