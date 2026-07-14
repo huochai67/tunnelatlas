@@ -56,6 +56,35 @@ die() {
   exit 1
 }
 
+install_openrc_service() {
+  if [[ -f "$PACKAGE_DIR/tunnelatlas.initd" ]]; then
+    install -m 755 "$PACKAGE_DIR/tunnelatlas.initd" "$OPENRC_SERVICE_PATH"
+    return
+  fi
+
+  log "release does not include the OpenRC service; installing the built-in definition"
+  cat >"$OPENRC_SERVICE_PATH" <<'EOF'
+#!/sbin/openrc-run
+
+name="TunnelAtlas reporting daemon"
+description="Supervises sing-box and reports tunnel state to TunnelAtlas"
+supervisor="supervise-daemon"
+command="/usr/local/bin/tunnelatlasd"
+command_args="run"
+directory="/var/lib/tunnelatlas"
+respawn_delay=5
+respawn_max=0
+required_dirs="/var/lib/tunnelatlas"
+required_files="/etc/tunnelatlas/config.yaml /var/lib/tunnelatlas/identity.json"
+
+depend() {
+  after net firewall
+  use logger dns
+}
+EOF
+  chmod 755 "$OPENRC_SERVICE_PATH"
+}
+
 cleanup() {
   if [[ "$SCRUB_ENROLLMENT" == 1 && -f "$CONFIG_PATH" ]]; then
     sed -i '/^enrollmentToken:/d' "$CONFIG_PATH"
@@ -98,10 +127,17 @@ fi
 log "detected init system: $INIT_SYSTEM"
 
 case "$(uname -m)" in
-  x86_64|amd64) PLATFORM="x86_64-linux-gnu" ;;
-  aarch64|arm64) PLATFORM="aarch64-linux-gnu" ;;
+  x86_64|amd64) ARCHITECTURE="x86_64" ;;
+  aarch64|arm64) ARCHITECTURE="aarch64" ;;
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
+if [[ -e "/lib/ld-musl-${ARCHITECTURE}.so.1" ]] || (command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl); then
+  LIBC="musl"
+else
+  LIBC="gnu"
+fi
+PLATFORM="${ARCHITECTURE}-linux-${LIBC}"
+log "detected platform: $PLATFORM"
 
 if [[ "$VERSION" == latest ]]; then
   log "resolving latest release"
@@ -118,27 +154,25 @@ BASE_URL="https://github.com/$REPOSITORY/releases/download/$TAG"
 
 TMP_DIR="$(mktemp -d)"
 log "downloading $ARCHIVE"
-curl -fL --retry 3 --retry-delay 2 -o "$TMP_DIR/$ARCHIVE" "$BASE_URL/$ARCHIVE"
-curl -fL --retry 3 --retry-delay 2 -o "$TMP_DIR/SHA256SUMS" "$BASE_URL/SHA256SUMS"
+curl -fL --retry 3 --retry-delay 2 -o "$TMP_DIR/$ARCHIVE" "$BASE_URL/$ARCHIVE" || die "release asset is unavailable: $ARCHIVE"
+curl -fL --retry 3 --retry-delay 2 -o "$TMP_DIR/SHA256SUMS" "$BASE_URL/SHA256SUMS" || die "release checksums are unavailable"
 
 EXPECTED_SUM="$(awk -v archive="$ARCHIVE" '$2 == archive || $2 == "./" archive { print $1; exit }' "$TMP_DIR/SHA256SUMS")"
 [[ "$EXPECTED_SUM" =~ ^[0-9a-fA-F]{64}$ ]] || die "$ARCHIVE is missing or invalid in SHA256SUMS"
-printf '%s  %s\n' "$EXPECTED_SUM" "$TMP_DIR/$ARCHIVE" | sha256sum --check --status - || die "release checksum verification failed"
+printf '%s  %s\n' "$EXPECTED_SUM" "$TMP_DIR/$ARCHIVE" | sha256sum -c -s - || die "release checksum verification failed"
 
 tar -C "$TMP_DIR" --no-same-owner -xzf "$TMP_DIR/$ARCHIVE"
 PACKAGE_DIR="$TMP_DIR/tunnelatlasd-${VERSION_NUMBER}-${PLATFORM}"
 [[ -x "$PACKAGE_DIR/tunnelatlasd" ]] || die "release archive does not contain tunnelatlasd"
 if [[ "$INIT_SYSTEM" == systemd ]]; then
   [[ -f "$PACKAGE_DIR/tunnelatlas.service" ]] || die "release archive does not contain tunnelatlas.service"
-else
-  [[ -f "$PACKAGE_DIR/tunnelatlas.initd" ]] || die "release archive does not contain tunnelatlas.initd"
 fi
 
 install -m 755 "$PACKAGE_DIR/tunnelatlasd" "$BIN_PATH"
 if [[ "$INIT_SYSTEM" == systemd ]]; then
   install -m 644 "$PACKAGE_DIR/tunnelatlas.service" "$SYSTEMD_SERVICE_PATH"
 else
-  install -m 755 "$PACKAGE_DIR/tunnelatlas.initd" "$OPENRC_SERVICE_PATH"
+  install_openrc_service
 fi
 install -d -m 755 "$CONFIG_DIR" "$STATE_DIR"
 log "installed $($BIN_PATH --version)"

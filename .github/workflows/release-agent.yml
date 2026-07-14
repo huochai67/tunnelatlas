@@ -54,23 +54,20 @@ jobs:
             platform: x86_64-linux-gnu
           - target: aarch64-unknown-linux-gnu
             platform: aarch64-linux-gnu
+          - target: x86_64-unknown-linux-musl
+            platform: x86_64-linux-musl
+          - target: aarch64-unknown-linux-musl
+            platform: aarch64-linux-musl
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      - name: Install ARM64 linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes gcc-aarch64-linux-gnu
-          echo 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc' >> "$GITHUB_ENV"
-          echo 'CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc' >> "$GITHUB_ENV"
       - name: Build release binary
-        run: cargo build --release --locked --package tunnelatlasd --target "${{ matrix.target }}"
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: "--release --locked --package tunnelatlasd"
+          force-use-cross: true
+          strip: false
       - name: Package
         shell: bash
         run: |
