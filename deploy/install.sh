@@ -11,17 +11,20 @@ unset TUNNELATLAS_ENROLLMENT_TOKEN
 SING_BOX_BINARY="${TUNNELATLAS_SING_BOX_BINARY:-}"
 SING_BOX_INSTALL_MODE="${TUNNELATLAS_SING_BOX_INSTALL_MODE:-auto}"
 SING_BOX_PROTOCOLS="${TUNNELATLAS_SING_BOX_PROTOCOLS:-ss}"
-SING_BOX_HOST=""
-SING_BOX_REALITY_SNI=""
-SING_BOX_SS_METHOD=""
-SING_BOX_SS_PORT=""
-SING_BOX_HY2_PORT=""
-SING_BOX_TUIC_PORT=""
-SING_BOX_REALITY_PORT=""
-SING_BOX_ANYTLS_PORT=""
-SING_BOX_VMESS_PORT=""
-SING_BOX_VMESS_PATH=""
-SING_BOX_VMESS_HOST=""
+SING_BOX_HOST="${TUNNELATLAS_SING_BOX_HOST:-}"
+SING_BOX_REALITY_SNI="${TUNNELATLAS_SING_BOX_REALITY_SNI:-}"
+SING_BOX_SS_METHOD="${TUNNELATLAS_SING_BOX_SS_METHOD:-}"
+SING_BOX_SS_PORT="${TUNNELATLAS_SING_BOX_SS_PORT:-}"
+SING_BOX_HY2_PORT="${TUNNELATLAS_SING_BOX_HY2_PORT:-}"
+SING_BOX_TUIC_PORT="${TUNNELATLAS_SING_BOX_TUIC_PORT:-}"
+SING_BOX_REALITY_PORT="${TUNNELATLAS_SING_BOX_REALITY_PORT:-}"
+SING_BOX_ANYTLS_PORT="${TUNNELATLAS_SING_BOX_ANYTLS_PORT:-}"
+SING_BOX_VMESS_PORT="${TUNNELATLAS_SING_BOX_VMESS_PORT:-}"
+SING_BOX_VMESS_PATH="${TUNNELATLAS_SING_BOX_VMESS_PATH:-}"
+SING_BOX_VMESS_HOST="${TUNNELATLAS_SING_BOX_VMESS_HOST:-}"
+INSTALL_MODE="interactive"
+MODE_OPTION=""
+SING_BOX_MODE_OPTION=""
 
 CONFIG_DIR="/etc/tunnelatlas"
 STATE_DIR="/var/lib/tunnelatlas"
@@ -38,9 +41,15 @@ usage() {
 Install TunnelAtlas on a clean Linux system using systemd or OpenRC.
 
 Usage:
-  sudo ./install.sh [options]
+  sudo ./install.sh
+  sudo ./install.sh --interactive [options]
+  sudo TUNNELATLAS_ENROLLMENT_TOKEN=... ./install.sh --non-interactive [options]
 
-Required:
+Mode options:
+  --interactive             Run the installation wizard (default)
+  -y, --non-interactive     Never prompt; fail when required values are missing
+
+Required in non-interactive mode:
   --server-url URL
   --site-id ID
 
@@ -68,12 +77,108 @@ Download options:
   -h, --help
 
 This installer never imports an existing sing-box or TunnelAtlas configuration.
-The enrollment token is read from /dev/tty, or from TUNNELATLAS_ENROLLMENT_TOKEN.
+Interactive mode reads the enrollment token silently from /dev/tty.
+Non-interactive mode requires TUNNELATLAS_ENROLLMENT_TOKEN.
 EOF
 }
 
 log() { printf '[tunnelatlas] %s\n' "$*"; }
 die() { printf '[tunnelatlas] error: %s\n' "$*" >&2; exit 1; }
+
+prompt_value() {
+  local variable="$1" label="$2" default_value="$3" required="$4" value="" prompt_text
+  local current_value="${!variable}"
+  [[ -n "$current_value" ]] && default_value="$current_value"
+  while true; do
+    if [[ -n "$default_value" ]]; then prompt_text="$label [$default_value]: "; else prompt_text="$label: "; fi
+    printf '%s' "$prompt_text" >/dev/tty
+    IFS= read -r value </dev/tty || die "failed to read interactive input"
+    [[ -n "$value" ]] || value="$default_value"
+    if [[ -n "$value" || "$required" != true ]]; then printf -v "$variable" '%s' "$value"; return; fi
+    printf '[tunnelatlas] 该项不能为空。\n' >/dev/tty
+  done
+}
+
+protocol_selected() {
+  [[ "$SING_BOX_PROTOCOLS" == all || ",$SING_BOX_PROTOCOLS," == *",$1,"* ]]
+}
+
+validate_protocol_list() {
+  local protocols_to_validate="$SING_BOX_PROTOCOLS"
+  local -a requested_protocols
+  local -A seen_protocols=()
+  [[ "$protocols_to_validate" != all ]] || protocols_to_validate="ss,hy2,tuic,reality,anytls,vmess"
+  IFS=',' read -r -a requested_protocols <<<"$protocols_to_validate"
+  [[ ${#requested_protocols[@]} -gt 0 ]] || return 1
+  for protocol in "${requested_protocols[@]}"; do
+    case "$protocol" in ss|hy2|tuic|reality|anytls|vmess) ;; *) return 1 ;; esac
+    [[ -z "${seen_protocols[$protocol]+value}" ]] || return 1
+    seen_protocols[$protocol]=1
+  done
+}
+
+interactive_wizard() {
+  [[ -r /dev/tty && -w /dev/tty ]] || die "interactive mode requires /dev/tty; use --non-interactive for automation"
+  printf '\nTunnelAtlas 交互式安装\n直接回车可接受方括号中的默认值。\n\n' >/dev/tty
+  prompt_value SERVER_URL "Worker URL" "$SERVER_URL" true
+  prompt_value SITE_ID "站点 ID" "$SITE_ID" true
+  prompt_value AGENT_NAME "节点名称" "$AGENT_NAME" true
+  while true; do
+    prompt_value SING_BOX_PROTOCOLS "协议列表 (ss,hy2,tuic,reality,anytls,vmess,all)" "$SING_BOX_PROTOCOLS" true
+    SING_BOX_PROTOCOLS="${SING_BOX_PROTOCOLS// /}"
+    if validate_protocol_list; then break; fi
+    printf '[tunnelatlas] 协议列表无效或包含重复项。\n' >/dev/tty
+  done
+  prompt_value SING_BOX_HOST "公网 IP 或域名（可留空，首次上报后自动识别）" "$SING_BOX_HOST" false
+
+  local install_choice="" install_default="1"
+  case "$SING_BOX_INSTALL_MODE" in always) install_default="2" ;; never) install_default="3" ;; esac
+  while true; do
+    printf 'sing-box 安装方式 [1=自动, 2=强制安装, 3=使用现有二进制] (默认 %s): ' "$install_default" >/dev/tty
+    IFS= read -r install_choice </dev/tty || die "failed to read interactive input"
+    [[ -n "$install_choice" ]] || install_choice="$install_default"
+    case "$install_choice" in
+      1|auto) SING_BOX_INSTALL_MODE="auto"; break ;;
+      2|always) SING_BOX_INSTALL_MODE="always"; break ;;
+      3|never) SING_BOX_INSTALL_MODE="never"; break ;;
+      *) printf '[tunnelatlas] 请输入 1、2 或 3。\n' >/dev/tty ;;
+    esac
+  done
+  if [[ "$SING_BOX_INSTALL_MODE" == never ]]; then
+    prompt_value SING_BOX_BINARY "sing-box 二进制路径（留空则从 PATH 查找）" "$SING_BOX_BINARY" false
+  fi
+
+  if protocol_selected ss; then
+    prompt_value SING_BOX_SS_METHOD "Shadowsocks 加密方式" "${SING_BOX_SS_METHOD:-2022-blake3-aes-128-gcm}" true
+    prompt_value SING_BOX_SS_PORT "Shadowsocks 端口（留空则随机）" "$SING_BOX_SS_PORT" false
+  fi
+  if protocol_selected hy2; then prompt_value SING_BOX_HY2_PORT "Hysteria2 端口（留空则随机）" "$SING_BOX_HY2_PORT" false; fi
+  if protocol_selected tuic; then prompt_value SING_BOX_TUIC_PORT "TUIC 端口（留空则随机）" "$SING_BOX_TUIC_PORT" false; fi
+  if protocol_selected reality; then prompt_value SING_BOX_REALITY_PORT "VLESS Reality 端口（留空则随机）" "$SING_BOX_REALITY_PORT" false; fi
+  if protocol_selected anytls; then prompt_value SING_BOX_ANYTLS_PORT "AnyTLS Reality 端口（留空则随机）" "$SING_BOX_ANYTLS_PORT" false; fi
+  if protocol_selected reality || protocol_selected anytls; then
+    prompt_value SING_BOX_REALITY_SNI "Reality SNI" "${SING_BOX_REALITY_SNI:-addons.mozilla.org}" true
+  fi
+  if protocol_selected vmess; then
+    prompt_value SING_BOX_VMESS_PORT "VMess WebSocket 端口（留空则随机）" "$SING_BOX_VMESS_PORT" false
+    prompt_value SING_BOX_VMESS_PATH "VMess WebSocket 路径" "${SING_BOX_VMESS_PATH:-/vmess}" true
+    prompt_value SING_BOX_VMESS_HOST "VMess WebSocket Host（可留空）" "$SING_BOX_VMESS_HOST" false
+  fi
+
+  if [[ -z "$ENROLLMENT_TOKEN" ]]; then
+    printf '一次性注册码: ' >/dev/tty
+    IFS= read -r -s ENROLLMENT_TOKEN </dev/tty || die "failed to read enrollment token"
+    printf '\n' >/dev/tty
+  fi
+  [[ -n "$ENROLLMENT_TOKEN" ]] || die "enrollment token cannot be empty"
+
+  printf '\n安装摘要\n  Worker: %s\n  站点: %s\n  节点: %s\n  协议: %s\n  公网地址: %s\n  sing-box: %s\n' \
+    "$SERVER_URL" "$SITE_ID" "$AGENT_NAME" "$SING_BOX_PROTOCOLS" "${SING_BOX_HOST:-自动识别}" "$SING_BOX_INSTALL_MODE" >/dev/tty
+  local confirmation=""
+  printf '确认开始安装？[Y/n]: ' >/dev/tty
+  IFS= read -r confirmation </dev/tty || die "failed to read confirmation"
+  case "$confirmation" in ""|y|Y|yes|YES) ;; *) log "installation cancelled"; exit 0 ;; esac
+}
 
 cleanup() {
   if [[ "$SCRUB_ENROLLMENT" == 1 && -f "$CONFIG_PATH" ]]; then sed -i '/^enrollmentToken:/d' "$CONFIG_PATH"; fi
@@ -84,12 +189,22 @@ trap cleanup EXIT
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --interactive)
+      [[ "$MODE_OPTION" != non-interactive ]] || die "--interactive conflicts with --non-interactive"
+      INSTALL_MODE="interactive"; MODE_OPTION="interactive"; shift ;;
+    -y|--non-interactive)
+      [[ "$MODE_OPTION" != interactive ]] || die "--non-interactive conflicts with --interactive"
+      INSTALL_MODE="non-interactive"; MODE_OPTION="non-interactive"; shift ;;
     --server-url) [[ $# -ge 2 ]] || die "$1 requires a value"; SERVER_URL="$2"; shift 2 ;;
     --site-id) [[ $# -ge 2 ]] || die "$1 requires a value"; SITE_ID="$2"; shift 2 ;;
     --agent-name) [[ $# -ge 2 ]] || die "$1 requires a value"; AGENT_NAME="$2"; shift 2 ;;
     --sing-box-binary) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_BINARY="$2"; shift 2 ;;
-    --install-sing-box) SING_BOX_INSTALL_MODE="always"; shift ;;
-    --skip-sing-box-install) SING_BOX_INSTALL_MODE="never"; shift ;;
+    --install-sing-box)
+      [[ "$SING_BOX_MODE_OPTION" != never ]] || die "--install-sing-box conflicts with --skip-sing-box-install"
+      SING_BOX_INSTALL_MODE="always"; SING_BOX_MODE_OPTION="always"; shift ;;
+    --skip-sing-box-install)
+      [[ "$SING_BOX_MODE_OPTION" != always ]] || die "--skip-sing-box-install conflicts with --install-sing-box"
+      SING_BOX_INSTALL_MODE="never"; SING_BOX_MODE_OPTION="never"; shift ;;
     --sing-box-protocols) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_PROTOCOLS="$2"; shift 2 ;;
     --sing-box-host) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_HOST="$2"; shift 2 ;;
     --sing-box-reality-sni) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_REALITY_SNI="$2"; shift 2 ;;
@@ -111,27 +226,45 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $EUID -eq 0 ]] || die "run this script as root"
-[[ -n "$SERVER_URL" ]] || die "--server-url is required"
-[[ -n "$SITE_ID" ]] || die "--site-id is required"
+if [[ "$INSTALL_MODE" == interactive ]]; then
+  interactive_wizard
+else
+  [[ -n "$SERVER_URL" ]] || die "--server-url is required in non-interactive mode"
+  [[ -n "$SITE_ID" ]] || die "--site-id is required in non-interactive mode"
+  [[ -n "$ENROLLMENT_TOKEN" ]] || die "TUNNELATLAS_ENROLLMENT_TOKEN is required in non-interactive mode"
+fi
 [[ "$SITE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]] || die "invalid site ID"
 [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid GitHub repository"
 [[ "$SING_BOX_INSTALL_MODE" =~ ^(auto|always|never)$ ]] || die "invalid sing-box install mode"
 for command in awk curl grep hostname install mktemp rm sed sha256sum tar uname; do command -v "$command" >/dev/null || die "required command not found: $command"; done
-for value in "$SERVER_URL" "$SITE_ID" "$AGENT_NAME" "$SING_BOX_HOST" "$SING_BOX_REALITY_SNI" "$SING_BOX_VMESS_PATH" "$SING_BOX_VMESS_HOST"; do
+for value in "$SERVER_URL" "$SITE_ID" "$AGENT_NAME" "$SING_BOX_BINARY" "$SING_BOX_PROTOCOLS" "$SING_BOX_HOST" "$SING_BOX_REALITY_SNI" "$SING_BOX_SS_METHOD" "$SING_BOX_VMESS_PATH" "$SING_BOX_VMESS_HOST" "$VERSION" "$REPOSITORY"; do
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "option values must fit on one line"
 done
+[[ "$ENROLLMENT_TOKEN" != *$'\n'* && "$ENROLLMENT_TOKEN" != *$'\r'* ]] || die "enrollment token must fit on one line"
+if [[ "$SERVER_URL" != https://* && ! "$SERVER_URL" =~ ^http://(localhost|127\.0\.0\.1)([:/]|$) ]]; then
+  die "--server-url must use HTTPS outside localhost"
+fi
 validate_port() {
   local value="$1"
   [[ -z "$value" ]] && return
   [[ "$value" =~ ^[0-9]+$ ]] && (( 10#$value >= 1 && 10#$value <= 65535 )) || die "invalid port: $value"
 }
 for port in "$SING_BOX_SS_PORT" "$SING_BOX_HY2_PORT" "$SING_BOX_TUIC_PORT" "$SING_BOX_REALITY_PORT" "$SING_BOX_ANYTLS_PORT" "$SING_BOX_VMESS_PORT"; do validate_port "$port"; done
-protocols_to_validate="$SING_BOX_PROTOCOLS"
-[[ "$protocols_to_validate" != all ]] || protocols_to_validate="ss,hy2,tuic,reality,anytls,vmess"
-IFS=',' read -r -a requested_protocols <<<"$protocols_to_validate"
-for protocol in "${requested_protocols[@]}"; do
-  case "$protocol" in ss|hy2|tuic|reality|anytls|vmess) ;; *) die "unsupported protocol: $protocol" ;; esac
-done
+declare -A configured_ports=()
+validate_protocol_list || die "invalid or duplicate sing-box protocol list: $SING_BOX_PROTOCOLS"
+record_protocol_port() {
+  local protocol="$1" port="$2"
+  protocol_selected "$protocol" || return 0
+  [[ -n "$port" ]] || return 0
+  [[ -z "${configured_ports[$port]+value}" ]] || die "duplicate configured protocol port: $port"
+  configured_ports[$port]=1
+}
+record_protocol_port ss "$SING_BOX_SS_PORT"
+record_protocol_port hy2 "$SING_BOX_HY2_PORT"
+record_protocol_port tuic "$SING_BOX_TUIC_PORT"
+record_protocol_port reality "$SING_BOX_REALITY_PORT"
+record_protocol_port anytls "$SING_BOX_ANYTLS_PORT"
+record_protocol_port vmess "$SING_BOX_VMESS_PORT"
 
 if [[ -e "$CONFIG_DIR" || -e "$STATE_DIR" || -e "$BIN_PATH" || -e "$SYSTEMD_SERVICE_PATH" || -e "$OPENRC_SERVICE_PATH" ]]; then
   die "existing TunnelAtlas state detected; this installer supports clean installations only"
@@ -206,12 +339,6 @@ else
   install -m 755 "$PACKAGE_DIR/tunnelatlas.initd" "$OPENRC_SERVICE_PATH"
 fi
 
-if [[ -z "$ENROLLMENT_TOKEN" ]]; then
-  [[ -r /dev/tty ]] || die "no terminal available; set TUNNELATLAS_ENROLLMENT_TOKEN"
-  printf 'One-time enrollment token: ' >/dev/tty
-  IFS= read -r -s ENROLLMENT_TOKEN </dev/tty || die "failed to read enrollment token"
-  printf '\n' >/dev/tty
-fi
 [[ -n "$ENROLLMENT_TOKEN" ]] || die "enrollment token cannot be empty"
 
 yaml_quote() { local escaped; escaped="$(printf '%s' "$1" | sed "s/'/''/g")"; printf "'%s'" "$escaped"; }

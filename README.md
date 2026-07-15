@@ -33,30 +33,34 @@ TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧
 
 ### 一键部署 Agent
 
-先在控制台为目标站点生成一次性注册码，然后在 Linux 节点上执行（支持 systemd 和 OpenRC）：
+先在控制台为目标站点生成一次性注册码。默认启动交互式向导（支持 systemd 和 OpenRC）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/huochai67/tunnelatlas/main/deploy/install.sh -o /tmp/tunnelatlas-install.sh
-sudo bash /tmp/tunnelatlas-install.sh \
-  --server-url https://你的-worker-域名 \
-  --site-id site-home \
-  --agent-name edge-01
+sudo bash /tmp/tunnelatlas-install.sh
 rm -f /tmp/tunnelatlas-install.sh
 ```
 
-脚本会静默询问注册码，自动识别 x86_64/ARM64 及 systemd/OpenRC、校验并安装最新 Release 和 sing-box、创建随机凭据、注册节点并启用开机服务。安装器仅支持干净系统；发现旧 TunnelAtlas 状态、外部 sing-box 配置或正在运行的独立 sing-box 服务时会直接停止。
+向导会依次询问 Worker、站点、节点名称、协议、端口和 sing-box 安装方式，最后静默读取一次性注册码并显示安装摘要。
 
-可按参考安装器的协议选项部署，例如 SS 和 VLESS Reality：
+自动化部署使用 `--non-interactive`；该模式不会读取终端，所有必填值必须通过参数或环境变量传入：
 
 ```bash
-sudo bash /tmp/tunnelatlas-install.sh \
+curl -fsSL https://raw.githubusercontent.com/huochai67/tunnelatlas/main/deploy/install.sh -o /tmp/tunnelatlas-install.sh
+export TUNNELATLAS_ENROLLMENT_TOKEN='一次性注册码'
+sudo --preserve-env=TUNNELATLAS_ENROLLMENT_TOKEN bash /tmp/tunnelatlas-install.sh \
+  --non-interactive \
   --server-url https://你的-worker-域名 \
   --site-id site-home \
   --agent-name edge-01 \
   --sing-box-protocols ss,reality \
   --sing-box-reality-port 443 \
   --sing-box-reality-sni addons.mozilla.org
+unset TUNNELATLAS_ENROLLMENT_TOKEN
+rm -f /tmp/tunnelatlas-install.sh
 ```
+
+脚本会自动识别 x86_64/ARM64 及 systemd/OpenRC、校验并安装最新 Release 和 sing-box、创建随机凭据、注册节点并启用开机服务。安装器仅支持干净系统；发现旧 TunnelAtlas 状态、外部 sing-box 配置或正在运行的独立 sing-box 服务时会直接停止。
 
 使用 `--skip-sing-box-install` 可要求必须预先存在 sing-box；使用 `--install-sing-box` 可强制安装 sing-box。Agent 永远不会读取 `/etc/sing-box/config.json`，生成配置位于 `/var/lib/tunnelatlas/sing-box.json`。
 
