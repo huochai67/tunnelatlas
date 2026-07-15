@@ -11,7 +11,7 @@ const els = {
   dialog: $("#auth-dialog"), authForm: $("#auth-form"), authToken: $("#access-token"), authError: $("#auth-error"),
   session: $("#session-button"), refresh: $("#refresh-button"), syncDot: $("#sync-dot"), syncLabel: $("#sync-label"),
   clock: $("#server-clock"), date: $("#server-date"), agents: $("#agent-list"), tunnels: $("#tunnel-table"),
-  siteSelect: $("#site-select"), siteFilter: $("#site-filter"), createToken: $("#create-token-button"),
+  siteSelect: $("#site-select"), siteFilter: $("#site-filter"), createToken: $("#create-token-button"), deleteSite: $("#delete-site-button"),
   siteForm: $("#site-form"), showSiteForm: $("#show-site-form"), readonlyNote: $("#readonly-note"),
   tokenResult: $("#token-result"), tokenValue: $("#token-value"), tokenExpiry: $("#token-expiry"),
   search: $("#tunnel-search"), toast: $("#toast"),
@@ -92,6 +92,8 @@ function render() {
   els.session.textContent = state.mode === "admin" ? "管理员会话" : state.mode === "read" ? "只读会话" : "连接控制面";
   els.readonlyNote.classList.toggle("hidden", state.mode !== "read");
   els.createToken.disabled = state.mode !== "admin" || !els.siteSelect.value;
+  els.deleteSite.disabled = state.mode !== "admin" || !els.siteSelect.value;
+  els.deleteSite.classList.toggle("hidden", state.mode !== "admin");
   els.showSiteForm.classList.toggle("hidden", state.mode !== "admin");
 }
 
@@ -110,6 +112,7 @@ function renderAgents(agents) {
     <div class="agent-name"><strong>${escapeHtml(agent.name)}</strong><span>${escapeHtml(agent.id)}</span></div>
     <div class="agent-meta"><strong>${agent.tunnelCount || 0} 条隧道</strong><span>${escapeHtml(agent.siteId)} · v${escapeHtml(agent.agentVersion || "—")}</span></div>
     <span class="agent-state ${agent.connectionStatus}">${statusText(agent.connectionStatus)}</span>
+    ${state.mode === "admin" ? `<button class="agent-delete" type="button" data-agent-id="${escapeAttr(agent.id)}" aria-label="删除节点 ${escapeAttr(agent.name)}">删除</button>` : ""}
   </div>`).join("");
 }
 
@@ -151,10 +154,35 @@ els.session.addEventListener("click", () => state.token ? disconnect() : openAut
 els.refresh.addEventListener("click", () => refresh());
 $("#agent-filter").addEventListener("click", (event) => { const button = event.target.closest("button[data-filter]"); if (!button) return; state.agentFilter = button.dataset.filter; document.querySelectorAll("#agent-filter button").forEach((item) => item.classList.toggle("active", item === button)); renderAgents(state.overview.agents || []); });
 els.search.addEventListener("input", () => renderTunnels(state.overview.tunnels || [])); els.siteFilter.addEventListener("change", () => renderTunnels(state.overview.tunnels || []));
-els.siteSelect.addEventListener("change", () => { els.createToken.disabled = state.mode !== "admin" || !els.siteSelect.value; });
+els.siteSelect.addEventListener("change", () => { const disabled = state.mode !== "admin" || !els.siteSelect.value; els.createToken.disabled = disabled; els.deleteSite.disabled = disabled; });
 els.showSiteForm.addEventListener("click", () => els.siteForm.classList.remove("hidden")); $("#cancel-site").addEventListener("click", () => els.siteForm.classList.add("hidden"));
 els.siteForm.addEventListener("submit", async (event) => { event.preventDefault(); try { const site = await api("/v1/admin/sites", { method: "POST", body: JSON.stringify({ id: $("#site-id").value.trim(), name: $("#site-name").value.trim() }) }); els.siteForm.reset(); els.siteForm.classList.add("hidden"); await refresh({ quiet: true }); els.siteSelect.value = site.id; els.createToken.disabled = false; toast("站点已创建"); } catch (error) { toast(error.message); } });
 els.createToken.addEventListener("click", async () => { try { const data = await api(`/v1/admin/sites/${encodeURIComponent(els.siteSelect.value)}/enrollment-tokens`, { method: "POST" }); els.tokenValue.textContent = data.token; els.tokenExpiry.textContent = `${new Date(data.expiresAt).toLocaleTimeString("zh-CN", { hour12: false })} 失效`; els.tokenResult.classList.remove("hidden"); } catch (error) { toast(error.message); } });
+els.deleteSite.addEventListener("click", async () => {
+  const siteId = els.siteSelect.value;
+  const site = (state.overview.sites || []).find((item) => item.id === siteId);
+  if (!siteId || !window.confirm(`确定删除站点“${site?.name || siteId}”吗？\n\n该站点的注册码、节点和隧道都会被永久删除。`)) return;
+  els.deleteSite.disabled = true;
+  try {
+    await api(`/v1/admin/sites/${encodeURIComponent(siteId)}`, { method: "DELETE" });
+    els.tokenResult.classList.add("hidden");
+    await refresh({ quiet: true });
+    toast("站点已删除");
+  } catch (error) { toast(error.message); }
+  finally { els.deleteSite.disabled = state.mode !== "admin" || !els.siteSelect.value; }
+});
+els.agents.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-agent-id]");
+  if (!button || state.mode !== "admin") return;
+  const agent = (state.overview.agents || []).find((item) => item.id === button.dataset.agentId);
+  if (!agent || !window.confirm(`确定删除节点“${agent.name}”吗？\n\n请先停止或卸载该节点上的 Agent；删除后它将无法继续上报。`)) return;
+  button.disabled = true;
+  try {
+    await api(`/v1/admin/agents/${encodeURIComponent(agent.id)}`, { method: "DELETE" });
+    await refresh({ quiet: true });
+    toast("节点已删除");
+  } catch (error) { button.disabled = false; toast(error.message); }
+});
 $("#copy-token").addEventListener("click", async () => { await navigator.clipboard.writeText(els.tokenValue.textContent); toast("注册码已复制"); });
 
 if (state.token) { refresh().then(startAutoRefresh); } else { render(); openAuth(); }

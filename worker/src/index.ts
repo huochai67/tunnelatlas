@@ -6,21 +6,52 @@ import { encodeSubscription, type SubscriptionTunnel } from "./subscription";
 import type { EnrollmentBody, Env, ReportBody } from "./types";
 import { validateEnrollment, validateReport } from "./validation";
 
+const RESOURCE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
 function requireToken(request: Request, expected: string): void {
   if (!expected || bearer(request) !== expected) throw new HttpError(401, "Invalid bearer token");
+}
+
+function resourceId(value: string): string {
+  let decoded: string;
+  try { decoded = decodeURIComponent(value); }
+  catch { throw new HttpError(400, "Invalid resource ID"); }
+  if (!RESOURCE_ID.test(decoded)) throw new HttpError(400, "Invalid resource ID");
+  return decoded;
 }
 
 async function createSite(request: Request, env: Env): Promise<Response> {
   requireToken(request, env.ADMIN_TOKEN);
   const body = await readJson<{ id: string; name: string }>(request);
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(body.id) || !body.name?.trim()) throw new HttpError(400, "Invalid site");
+  if (!RESOURCE_ID.test(body.id) || !body.name?.trim()) throw new HttpError(400, "Invalid site");
   const now = new Date().toISOString();
   await env.DB.prepare("INSERT INTO sites (id, name, created_at) VALUES (?, ?, ?)").bind(body.id, body.name.trim(), now).run();
   return json({ id: body.id, name: body.name.trim(), createdAt: now }, 201);
 }
 
-async function createEnrollmentToken(request: Request, env: Env, siteId: string): Promise<Response> {
+async function deleteSite(request: Request, env: Env, encodedSiteId: string): Promise<Response> {
   requireToken(request, env.ADMIN_TOKEN);
+  const siteId = resourceId(encodedSiteId);
+  const deleted = await env.DB.prepare(
+    "DELETE FROM sites WHERE id = ? RETURNING id, name",
+  ).bind(siteId).first<{ id: string; name: string }>();
+  if (!deleted) throw new HttpError(404, "Site not found");
+  return json({ deleted: true, id: deleted.id, name: deleted.name });
+}
+
+async function deleteAgent(request: Request, env: Env, encodedAgentId: string): Promise<Response> {
+  requireToken(request, env.ADMIN_TOKEN);
+  const agentId = resourceId(encodedAgentId);
+  const deleted = await env.DB.prepare(
+    "DELETE FROM agents WHERE id = ? RETURNING id, site_id, name",
+  ).bind(agentId).first<{ id: string; site_id: string; name: string }>();
+  if (!deleted) throw new HttpError(404, "Agent not found");
+  return json({ deleted: true, id: deleted.id, siteId: deleted.site_id, name: deleted.name });
+}
+
+async function createEnrollmentToken(request: Request, env: Env, encodedSiteId: string): Promise<Response> {
+  requireToken(request, env.ADMIN_TOKEN);
+  const siteId = resourceId(encodedSiteId);
   if (!(await env.DB.prepare("SELECT id FROM sites WHERE id = ?").bind(siteId).first())) throw new HttpError(404, "Site not found");
   const token = randomToken();
   const hash = await sha256Hex(`${env.ENROLLMENT_PEPPER}:${token}`);
@@ -222,7 +253,11 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && url.pathname === "/v1/admin/sites") return createSite(request, env);
   if (request.method === "GET" && url.pathname === "/v1/admin/overview") return adminOverview(request, env);
   const enrollmentMatch = url.pathname.match(/^\/v1\/admin\/sites\/([^/]+)\/enrollment-tokens$/);
-  if (request.method === "POST" && enrollmentMatch) return createEnrollmentToken(request, env, decodeURIComponent(enrollmentMatch[1]));
+  if (request.method === "POST" && enrollmentMatch) return createEnrollmentToken(request, env, enrollmentMatch[1]);
+  const siteMatch = url.pathname.match(/^\/v1\/admin\/sites\/([^/]+)$/);
+  if (request.method === "DELETE" && siteMatch) return deleteSite(request, env, siteMatch[1]);
+  const agentMatch = url.pathname.match(/^\/v1\/admin\/agents\/([^/]+)$/);
+  if (request.method === "DELETE" && agentMatch) return deleteAgent(request, env, agentMatch[1]);
   if (request.method === "POST" && url.pathname === "/v1/enrollments:exchange") return exchangeEnrollment(request, env);
   if (request.method === "POST" && url.pathname === "/v1/agent/report") return report(request, env);
   if (request.method === "GET" && url.pathname === "/v1/tunnels") return listTunnels(request, env);

@@ -7,7 +7,9 @@
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | POST | `/v1/admin/sites` | 创建站点 |
+| DELETE | `/v1/admin/sites/{siteId}` | 永久删除站点及其注册码、Agent 和隧道 |
 | POST | `/v1/admin/sites/{siteId}/enrollment-tokens` | 创建一次性注册码 |
+| DELETE | `/v1/admin/agents/{agentId}` | 永久删除 Agent 及其隧道 |
 | GET | `/v1/admin/overview` | 获取控制台所需的站点、Agent 和隧道概况 |
 
 ## Agent 注册
@@ -62,4 +64,4 @@ Authorization: Bearer <READ_TOKEN>
 
 ## 管理控制台
 
-Worker Static Assets 在 `/` 提供管理控制台，`/v1/*` 和 `/healthz` 仍优先进入 Worker 脚本。控制台接受管理或只读 token，并仅存入当前标签页的 `sessionStorage`；管理 token 可创建站点和注册码，只读 token 只能查看在线隧道。
+Worker Static Assets 在 `/` 提供管理控制台，`/v1/*` 和 `/healthz` 仍优先进入 Worker 脚本。控制台接受管理或只读 token，并仅存入当前标签页的 `sessionStorage`；管理 token 可创建站点和注册码，也可永久删除节点或站点，只读 token 只能查看在线隧道。删除正在运行的节点前应先在节点上停止或卸载 Agent，否则它会持续收到未授权响应且无法自动重新注册。
