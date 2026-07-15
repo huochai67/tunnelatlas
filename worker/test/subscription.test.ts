@@ -76,7 +76,7 @@ describe("node subscription", () => {
     expect(uris[3]).toMatch(/^vmess:\/\//);
   });
 
-  it("requires READ_TOKEN and does not accept ADMIN_TOKEN", async () => {
+  it("accepts READ_TOKEN from the bearer header or URL query only", async () => {
     const env = {
       ADMIN_TOKEN: "admin-token",
       READ_TOKEN: "read-token",
@@ -97,10 +97,19 @@ describe("node subscription", () => {
       headers: { Authorization: "Bearer admin-token" },
     }), env);
     expect(admin.status).toBe(401);
-    const allowed = await worker.fetch(new Request("https://atlas.example/v1/subscription", {
+    const adminQuery = await worker.fetch(new Request("https://atlas.example/v1/subscription?token=admin-token"), env);
+    expect(adminQuery.status).toBe(401);
+    const badQuery = await worker.fetch(new Request("https://atlas.example/v1/subscription?token=wrong"), env);
+    expect(badQuery.status).toBe(401);
+    const allowedHeader = await worker.fetch(new Request("https://atlas.example/v1/subscription", {
       headers: { Authorization: "Bearer read-token" },
     }), env);
-    expect(allowed.status).toBe(200);
-    expect(await allowed.text()).toBe("");
+    expect(allowedHeader.status).toBe(200);
+    expect(await allowedHeader.text()).toBe("");
+    const allowedQuery = await worker.fetch(new Request("https://atlas.example/v1/subscription?siteId=site-home&token=read-token"), env);
+    expect(allowedQuery.status).toBe(200);
+    expect(await allowedQuery.text()).toBe("");
+    const duplicateQuery = await worker.fetch(new Request("https://atlas.example/v1/subscription?token=read-token&token=read-token"), env);
+    expect(duplicateQuery.status).toBe(401);
   });
 });

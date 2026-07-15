@@ -176,8 +176,12 @@ async function listTunnels(request: Request, env: Env): Promise<Response> {
 }
 
 async function nodeSubscription(request: Request, env: Env): Promise<Response> {
-  requireToken(request, env.READ_TOKEN);
   const url = new URL(request.url);
+  const queryTokens = url.searchParams.getAll("token");
+  const queryToken = queryTokens.length === 1 ? queryTokens[0] : null;
+  if (!env.READ_TOKEN || (bearer(request) !== env.READ_TOKEN && queryToken !== env.READ_TOKEN)) {
+    throw new HttpError(401, "Invalid subscription token");
+  }
   const siteId = url.searchParams.get("siteId");
   const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
   const cutoff = new Date(Date.now() - offlineSeconds * 1000).toISOString();
