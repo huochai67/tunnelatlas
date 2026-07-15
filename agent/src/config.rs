@@ -55,8 +55,6 @@ fn default_ws_path() -> String {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
     pub server_url: String,
-    pub agent_name: String,
-    pub site_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enrollment_token: Option<String>,
     #[serde(default = "default_report_interval")]
@@ -186,9 +184,6 @@ impl Config {
         }
         if self.report_interval_seconds < 15 {
             bail!("reportIntervalSeconds must be at least 15");
-        }
-        if self.agent_name.trim().is_empty() || self.site_id.trim().is_empty() {
-            bail!("agentName and siteId cannot be empty");
         }
         if self.protocols.len() > 64 {
             bail!("protocols must contain at most 64 entries");
@@ -327,8 +322,6 @@ mod tests {
     fn rejects_duplicate_tags_and_ports() {
         let yaml = r#"
 serverUrl: https://example.com
-agentName: edge
-siteId: home
 singBox: {}
 protocols:
   - { tag: one, port: 443, type: shadowsocks }
@@ -348,10 +341,19 @@ protocols:
     fn old_source_config_field_is_not_accepted() {
         let yaml = r#"
 serverUrl: https://example.com
-agentName: edge
-siteId: home
 singBox:
   sourceConfigPath: /etc/sing-box/config.json
+"#;
+        assert!(serde_yaml::from_str::<Config>(yaml).is_err());
+    }
+
+    #[test]
+    fn legacy_site_and_agent_names_are_not_accepted() {
+        let yaml = r#"
+serverUrl: https://example.com
+agentName: edge
+siteId: home
+singBox: {}
 "#;
         assert!(serde_yaml::from_str::<Config>(yaml).is_err());
     }
@@ -360,8 +362,6 @@ singBox:
     fn protocol_options_use_camel_case() {
         let yaml = r#"
 serverUrl: https://example.com
-agentName: edge
-siteId: home
 singBox: {}
 protocols:
   - { tag: reality, port: 443, type: vless-reality, serverName: example.com }

@@ -2,7 +2,6 @@ import { base64UrlToBytes } from "./crypto";
 import { HttpError } from "./http";
 import type { EnrollmentBody, ReportBody, TunnelBody } from "./types";
 
-const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const STATUS = new Set(["healthy", "degraded", "failed", "unknown", "stopped"]);
 const AUTH_FIELDS = new Set(["name", "username", "password", "uuid", "flow", "token"]);
 
@@ -11,9 +10,7 @@ function text(value: unknown, name: string, max = 255): asserts value is string 
 }
 
 export function validateEnrollment(body: EnrollmentBody): void {
-  text(body.name, "name");
-  text(body.siteId, "siteId", 128);
-  if (!ID.test(body.siteId)) throw new HttpError(400, "Invalid siteId");
+  if (!body || typeof body !== "object") throw new HttpError(400, "Invalid enrollment");
   text(body.publicKey, "publicKey", 128);
   try {
     if (base64UrlToBytes(body.publicKey).byteLength !== 32) throw new Error("wrong length");
@@ -60,6 +57,7 @@ function validateAuthentication(value: unknown): void {
 }
 
 export function validateReport(body: ReportBody): void {
+  if (!body || typeof body !== "object") throw new HttpError(400, "Invalid report");
   text(body.agentVersion, "agentVersion", 64);
   if (!Array.isArray(body.tunnels) || body.tunnels.length > 64) throw new HttpError(400, "tunnels must contain at most 64 entries");
   const ids = new Set<string>();

@@ -9,8 +9,6 @@ export interface Env {
 }
 
 export interface EnrollmentBody {
-  name: string;
-  siteId: string;
   publicKey: string;
   platform: { os: string; arch: string; agentVersion: string };
   labels?: Record<string, string>;
@@ -35,8 +33,6 @@ export interface TunnelBody {
 
 export interface AgentRow {
   id: string;
-  site_id: string;
   public_key: string;
   last_sequence: number;
-  revoked_at: string | null;
 }

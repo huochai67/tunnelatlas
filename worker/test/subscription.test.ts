@@ -5,13 +5,12 @@ import type { Env } from "../src/types";
 
 function tunnel(overrides: Partial<SubscriptionTunnel> = {}): SubscriptionTunnel {
   return {
-    agentName: "edge-01",
+    nodeName: "edge-01",
     authentication: { method: "2022-blake3-aes-128-gcm", password: "secret" },
     endpoint: "proxy.example.com:8388",
     metadata: {},
     name: "public",
     protocol: "shadowsocks",
-    siteId: "site-home",
     status: "healthy",
     ...overrides,
   };
@@ -38,7 +37,7 @@ describe("node subscription", () => {
     const uris = subscriptionUris(tunnels);
     expect(uris).toHaveLength(2);
     expect(uris[0]).toMatch(/^ss:\/\/[A-Za-z0-9_-]+@proxy\.example\.com:8388#/);
-    expect(uris[1]).toBe("vless://client-uuid@[2001:db8::1]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=reality-public-key&sid=0123456789abcdef#site-home%2Fedge-01%2Fvless%2Falice");
+    expect(uris[1]).toBe("vless://client-uuid@[2001:db8::1]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=reality-public-key&sid=0123456789abcdef#edge-01%2Fvless%2Falice");
     expect(new TextDecoder().decode(Uint8Array.from(atob(encodeSubscription(tunnels)), (character) => character.charCodeAt(0))))
       .toBe(uris.join("\n"));
   });
@@ -106,7 +105,7 @@ describe("node subscription", () => {
     }), env);
     expect(allowedHeader.status).toBe(200);
     expect(await allowedHeader.text()).toBe("");
-    const allowedQuery = await worker.fetch(new Request("https://atlas.example/v1/subscription?siteId=site-home&token=read-token"), env);
+    const allowedQuery = await worker.fetch(new Request("https://atlas.example/v1/subscription?nodeId=node_one&token=read-token"), env);
     expect(allowedQuery.status).toBe(200);
     expect(await allowedQuery.text()).toBe("");
     const duplicateQuery = await worker.fetch(new Request("https://atlas.example/v1/subscription?token=read-token&token=read-token"), env);

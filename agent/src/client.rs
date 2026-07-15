@@ -40,8 +40,6 @@ impl AtlasClient {
     ) -> Result<EnrollmentResponse> {
         let public_key = URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes());
         let body = EnrollmentRequest {
-            name: &config.agent_name,
-            site_id: &config.site_id,
             public_key: &public_key,
             platform: Platform {
                 os: std::env::consts::OS,

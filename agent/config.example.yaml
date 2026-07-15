@@ -1,6 +1,4 @@
 serverUrl: https://atlas-api.example.com
-agentName: edge-01
-siteId: site-home
 enrollmentToken: replace-with-one-time-token
 reportIntervalSeconds: 60
 labels:

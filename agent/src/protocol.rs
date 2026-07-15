@@ -8,8 +8,6 @@ use crate::sing_box::ObservedTunnel;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollmentRequest<'a> {
-    pub name: &'a str,
-    pub site_id: &'a str,
     pub public_key: &'a str,
     pub platform: Platform,
     pub labels: &'a BTreeMap<String, String>,
@@ -72,4 +70,27 @@ pub struct ReportResponse {
     pub server_time: String,
     #[serde(default)]
     pub observed_address: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enrollment_contains_only_node_claim_data() {
+        let labels = BTreeMap::new();
+        let request = EnrollmentRequest {
+            public_key: "public-key",
+            platform: Platform {
+                os: "linux",
+                arch: "x86_64",
+                agent_version: "0.0.9",
+            },
+            labels: &labels,
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["publicKey"], "public-key");
+        assert!(value.get("agentName").is_none());
+        assert!(value.get("siteId").is_none());
+    }
 }

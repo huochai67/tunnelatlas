@@ -14,15 +14,19 @@ pnpm dev -- --var ADMIN_TOKEN:dev-admin \
 
 启动后访问 `http://127.0.0.1:8787/` 打开管理控制台，输入 `dev-admin` 获得管理能力，或输入 `dev-read` 进入只读模式。
 
-创建站点和注册码：
+创建节点时会同时返回注册码：
 
 ```bash
-curl -X POST http://127.0.0.1:8787/v1/admin/sites \
+curl -X POST http://127.0.0.1:8787/v1/admin/nodes \
   -H 'Authorization: Bearer dev-admin' \
   -H 'Content-Type: application/json' \
-  --data '{"id":"site-home","name":"Home"}'
+  --data '{"name":"Home"}'
+```
 
-curl -X POST http://127.0.0.1:8787/v1/admin/sites/site-home/enrollment-tokens \
+待接入节点的注册码过期后，可使用创建响应中的节点 ID 重新生成：
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/admin/nodes/node_xxx/enrollment-tokens \
   -H 'Authorization: Bearer dev-admin'
 ```
 

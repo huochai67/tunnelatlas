@@ -19,11 +19,13 @@ pnpm exec wrangler d1 create tunnelatlas
 pnpm db:migrate:remote
 ```
 
+`0003_merge_sites_and_agents_into_nodes.sql` 是破坏性 migration，会清空旧站点、Agent、注册码和隧道数据。升级到单一节点模型时，必须先在发布分支的目标提交上推送 `v0.0.9` 标签并等待 Release 制品完成，再备份 D1，最后才将同一提交合入 `main` 触发 Worker migration 和部署。旧节点需要从控制台重新创建和部署。
+
 ## 2. 配置运行时 Secret
 
 在 Cloudflare Dashboard 的 Worker 设置中创建四个加密变量：
 
-- `ADMIN_TOKEN`：管理控制台、站点和注册码管理权限；
+- `ADMIN_TOKEN`：管理控制台、节点和注册码管理权限；
 - `READ_TOKEN`：只读隧道发现权限；
 - `ENROLLMENT_PEPPER`：注册码摘要的服务端 pepper；
 - `CREDENTIALS_KEY`：加密 inbound 认证参数的 32 字节 AES 密钥。

@@ -4,8 +4,6 @@ set -Eeuo pipefail
 REPOSITORY="${TUNNELATLAS_REPOSITORY:-huochai67/tunnelatlas}"
 VERSION="${TUNNELATLAS_VERSION:-latest}"
 SERVER_URL="${TUNNELATLAS_SERVER_URL:-}"
-SITE_ID="${TUNNELATLAS_SITE_ID:-}"
-AGENT_NAME="${TUNNELATLAS_AGENT_NAME:-$(hostname -s 2>/dev/null || hostname)}"
 ENROLLMENT_TOKEN="${TUNNELATLAS_ENROLLMENT_TOKEN:-}"
 unset TUNNELATLAS_ENROLLMENT_TOKEN
 SING_BOX_BINARY="${TUNNELATLAS_SING_BOX_BINARY:-}"
@@ -51,10 +49,8 @@ Mode options:
 
 Required in non-interactive mode:
   --server-url URL
-  --site-id ID
 
 Node options:
-  --agent-name NAME
   --sing-box-binary PATH
   --install-sing-box
   --skip-sing-box-install
@@ -121,8 +117,6 @@ interactive_wizard() {
   [[ -r /dev/tty && -w /dev/tty ]] || die "interactive mode requires /dev/tty; use --non-interactive for automation"
   printf '\nTunnelAtlas 交互式安装\n直接回车可接受方括号中的默认值。\n\n' >/dev/tty
   prompt_value SERVER_URL "Worker URL" "$SERVER_URL" true
-  prompt_value SITE_ID "站点 ID" "$SITE_ID" true
-  prompt_value AGENT_NAME "节点名称" "$AGENT_NAME" true
   while true; do
     prompt_value SING_BOX_PROTOCOLS "协议列表 (ss,hy2,tuic,reality,anytls,vmess,all)" "$SING_BOX_PROTOCOLS" true
     SING_BOX_PROTOCOLS="${SING_BOX_PROTOCOLS// /}"
@@ -172,8 +166,8 @@ interactive_wizard() {
   fi
   [[ -n "$ENROLLMENT_TOKEN" ]] || die "enrollment token cannot be empty"
 
-  printf '\n安装摘要\n  Worker: %s\n  站点: %s\n  节点: %s\n  协议: %s\n  公网地址: %s\n  sing-box: %s\n' \
-    "$SERVER_URL" "$SITE_ID" "$AGENT_NAME" "$SING_BOX_PROTOCOLS" "${SING_BOX_HOST:-自动识别}" "$SING_BOX_INSTALL_MODE" >/dev/tty
+  printf '\n安装摘要\n  Worker: %s\n  协议: %s\n  公网地址: %s\n  sing-box: %s\n' \
+    "$SERVER_URL" "$SING_BOX_PROTOCOLS" "${SING_BOX_HOST:-自动识别}" "$SING_BOX_INSTALL_MODE" >/dev/tty
   local confirmation=""
   printf '确认开始安装？[Y/n]: ' >/dev/tty
   IFS= read -r confirmation </dev/tty || die "failed to read confirmation"
@@ -196,8 +190,6 @@ while [[ $# -gt 0 ]]; do
       [[ "$MODE_OPTION" != interactive ]] || die "--non-interactive conflicts with --interactive"
       INSTALL_MODE="non-interactive"; MODE_OPTION="non-interactive"; shift ;;
     --server-url) [[ $# -ge 2 ]] || die "$1 requires a value"; SERVER_URL="$2"; shift 2 ;;
-    --site-id) [[ $# -ge 2 ]] || die "$1 requires a value"; SITE_ID="$2"; shift 2 ;;
-    --agent-name) [[ $# -ge 2 ]] || die "$1 requires a value"; AGENT_NAME="$2"; shift 2 ;;
     --sing-box-binary) [[ $# -ge 2 ]] || die "$1 requires a value"; SING_BOX_BINARY="$2"; shift 2 ;;
     --install-sing-box)
       [[ "$SING_BOX_MODE_OPTION" != never ]] || die "--install-sing-box conflicts with --skip-sing-box-install"
@@ -230,14 +222,12 @@ if [[ "$INSTALL_MODE" == interactive ]]; then
   interactive_wizard
 else
   [[ -n "$SERVER_URL" ]] || die "--server-url is required in non-interactive mode"
-  [[ -n "$SITE_ID" ]] || die "--site-id is required in non-interactive mode"
   [[ -n "$ENROLLMENT_TOKEN" ]] || die "TUNNELATLAS_ENROLLMENT_TOKEN is required in non-interactive mode"
 fi
-[[ "$SITE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]] || die "invalid site ID"
 [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "invalid GitHub repository"
 [[ "$SING_BOX_INSTALL_MODE" =~ ^(auto|always|never)$ ]] || die "invalid sing-box install mode"
-for command in awk curl grep hostname install mktemp rm sed sha256sum tar uname; do command -v "$command" >/dev/null || die "required command not found: $command"; done
-for value in "$SERVER_URL" "$SITE_ID" "$AGENT_NAME" "$SING_BOX_BINARY" "$SING_BOX_PROTOCOLS" "$SING_BOX_HOST" "$SING_BOX_REALITY_SNI" "$SING_BOX_SS_METHOD" "$SING_BOX_VMESS_PATH" "$SING_BOX_VMESS_HOST" "$VERSION" "$REPOSITORY"; do
+for command in awk curl grep install mktemp rm sed sha256sum tar uname; do command -v "$command" >/dev/null || die "required command not found: $command"; done
+for value in "$SERVER_URL" "$SING_BOX_BINARY" "$SING_BOX_PROTOCOLS" "$SING_BOX_HOST" "$SING_BOX_REALITY_SNI" "$SING_BOX_SS_METHOD" "$SING_BOX_VMESS_PATH" "$SING_BOX_VMESS_HOST" "$VERSION" "$REPOSITORY"; do
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "option values must fit on one line"
 done
 [[ "$ENROLLMENT_TOKEN" != *$'\n'* && "$ENROLLMENT_TOKEN" != *$'\r'* ]] || die "enrollment token must fit on one line"
@@ -346,8 +336,6 @@ umask 077
 SCRUB_ENROLLMENT=1
 cat >"$CONFIG_PATH" <<EOF
 serverUrl: $(yaml_quote "$SERVER_URL")
-agentName: $(yaml_quote "$AGENT_NAME")
-siteId: $(yaml_quote "$SITE_ID")
 enrollmentToken: $(yaml_quote "$ENROLLMENT_TOKEN")
 reportIntervalSeconds: 60
 labels: {}

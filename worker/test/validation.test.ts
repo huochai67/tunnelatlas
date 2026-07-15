@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateReport } from "../src/validation";
+import { validateEnrollment, validateReport } from "../src/validation";
 
 function report(authentication: unknown) {
   return {
@@ -29,5 +29,15 @@ describe("report authentication validation", () => {
     expect(() => validateReport(report({ private_key: "must-not-upload" }))).toThrow(
       "Invalid tunnel.authentication field",
     );
+  });
+});
+
+describe("node enrollment validation", () => {
+  it("accepts enrollment without site or node names", () => {
+    expect(() => validateEnrollment({
+      publicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      platform: { os: "linux", arch: "x86_64", agentVersion: "0.0.9" },
+      labels: {},
+    })).not.toThrow();
   });
 });

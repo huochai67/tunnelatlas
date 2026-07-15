@@ -292,8 +292,6 @@ mod tests {
     fn config(directory: &Path) -> Config {
         Config {
             server_url: "https://example.com".into(),
-            agent_name: "edge".into(),
-            site_id: "home".into(),
             enrollment_token: None,
             report_interval_seconds: 60,
             labels: BTreeMap::new(),

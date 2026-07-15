@@ -25,9 +25,9 @@ export async function authenticateAgent(request: Request, env: Env, body: ArrayB
   if (actualHash !== contentHash.toLowerCase()) throw new HttpError(401, "Body hash mismatch");
 
   const agent = await env.DB.prepare(
-    "SELECT id, site_id, public_key, last_sequence, revoked_at FROM agents WHERE id = ?",
+    "SELECT id, public_key, last_sequence FROM nodes WHERE id = ? AND public_key IS NOT NULL",
   ).bind(agentId).first<AgentRow>();
-  if (!agent || agent.revoked_at) throw new HttpError(401, "Unknown or revoked agent");
+  if (!agent) throw new HttpError(401, "Unknown or reset agent");
   if (sequence <= agent.last_sequence) throw new HttpError(409, "Sequence has already been used");
 
   const url = new URL(request.url);
@@ -37,4 +37,3 @@ export async function authenticateAgent(request: Request, env: Env, body: ArrayB
   }
   return { ...agent, sequence };
 }
-

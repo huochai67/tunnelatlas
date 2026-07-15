@@ -1,13 +1,12 @@
 import { bytesToBase64Url } from "./crypto";
 
 export interface SubscriptionTunnel {
-  agentName: string;
+  nodeName: string;
   authentication: unknown;
   endpoint: string;
   metadata: unknown;
   name: string;
   protocol: string;
-  siteId: string;
   status: unknown;
 }
 
@@ -62,7 +61,7 @@ function users(authentication: Credentials): Credentials[] {
 }
 
 function displayName(tunnel: SubscriptionTunnel, user?: Credentials, index?: number): string {
-  const base = `${tunnel.siteId}/${tunnel.agentName}/${tunnel.name}`;
+  const base = `${tunnel.nodeName}/${tunnel.name}`;
   const userName = user && (text(user.name) ?? text(user.username));
   if (userName) return `${base}/${userName}`;
   return index === undefined ? base : `${base}/${index + 1}`;
