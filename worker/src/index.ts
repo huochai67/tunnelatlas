@@ -1,5 +1,6 @@
 import { authenticateAgent } from "./auth";
 import { decryptJson, encryptJson, randomId, randomToken, sha256Hex } from "./crypto";
+import { externallyReachableEndpoint } from "./endpoints";
 import { bearer, HttpError, json, problem, readJson } from "./http";
 import { encodeSubscription, type SubscriptionTunnel } from "./subscription";
 import type { EnrollmentBody, Env, ReportBody } from "./types";
@@ -68,7 +69,10 @@ async function report(request: Request, env: Env): Promise<Response> {
   // the snapshot cleanup below.
   const tunnels = body.tunnels.filter((tunnel) => tunnel.kind === "sing-box/inbound");
   const encryptedTunnels = await Promise.all(tunnels.map(async (tunnel) => ({
-    tunnel,
+    tunnel: {
+      ...tunnel,
+      endpoint: externallyReachableEndpoint(tunnel.endpoint, request.headers.get("CF-Connecting-IP")),
+    },
     authenticationCiphertext: await encryptJson(
       tunnel.authentication ?? {},
       env.CREDENTIALS_KEY,
@@ -157,6 +161,7 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
       agentName: String(tunnel.agentName),
       authentication: tunnel.authentication,
       endpoint: String(tunnel.endpoint),
+      metadata: tunnel.metadata,
       name: String(tunnel.name),
       protocol: String(tunnel.protocol),
       siteId: String(tunnel.siteId),

@@ -8,6 +8,7 @@ function tunnel(overrides: Partial<SubscriptionTunnel> = {}): SubscriptionTunnel
     agentName: "edge-01",
     authentication: { method: "2022-blake3-aes-128-gcm", password: "secret" },
     endpoint: "proxy.example.com:8388",
+    metadata: {},
     name: "public",
     protocol: "shadowsocks",
     siteId: "site-home",
@@ -23,6 +24,13 @@ describe("node subscription", () => {
       tunnel({
         authentication: { users: [{ name: "alice", uuid: "client-uuid", flow: "xtls-rprx-vision" }] },
         endpoint: "[2001:db8::1]:443",
+        metadata: {
+          tls: {
+            enabled: true,
+            serverName: "addons.mozilla.org",
+            reality: { enabled: true, publicKey: "reality-public-key", shortId: "0123456789abcdef" },
+          },
+        },
         name: "vless",
         protocol: "vless",
       }),
@@ -30,7 +38,7 @@ describe("node subscription", () => {
     const uris = subscriptionUris(tunnels);
     expect(uris).toHaveLength(2);
     expect(uris[0]).toMatch(/^ss:\/\/[A-Za-z0-9_-]+@proxy\.example\.com:8388#/);
-    expect(uris[1]).toBe("vless://client-uuid@[2001:db8::1]:443?encryption=none&flow=xtls-rprx-vision#site-home%2Fedge-01%2Fvless%2Falice");
+    expect(uris[1]).toBe("vless://client-uuid@[2001:db8::1]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=reality-public-key&sid=0123456789abcdef#site-home%2Fedge-01%2Fvless%2Falice");
     expect(new TextDecoder().decode(Uint8Array.from(atob(encodeSubscription(tunnels)), (character) => character.charCodeAt(0))))
       .toBe(uris.join("\n"));
   });
@@ -40,6 +48,11 @@ describe("node subscription", () => {
       tunnel({ status: "failed" }),
       tunnel({ protocol: "socks" }),
       tunnel({ authentication: {} }),
+      tunnel({
+        protocol: "vless",
+        authentication: { users: [{ uuid: "client-uuid" }] },
+        metadata: { tls: { reality: { enabled: true } } },
+      }),
     ])).toEqual([]);
   });
 

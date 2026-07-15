@@ -1,6 +1,6 @@
 [package]
 name = "tunnelatlasd"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -9,6 +9,7 @@ anyhow = "1.0"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
+curve25519-dalek = "4.1"
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 hex = "0.4"
 nix = { version = "0.30", features = ["signal"] }

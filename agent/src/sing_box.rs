@@ -6,8 +6,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use curve25519_dalek::montgomery::MontgomeryPoint;
 use nix::{sys::signal, unistd::Pid};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::{
     process::{Child, Command},
@@ -300,7 +302,7 @@ fn discover_section(
             endpoint,
             protocol: protocol.to_owned(),
             status: status.to_owned(),
-            metadata: json!({ "direction": direction }),
+            metadata: metadata_of(item, direction),
             authentication: authentication_of(item),
         });
     }
@@ -335,6 +337,99 @@ fn authentication_of(item: &Value) -> Value {
         }
     }
     Value::Object(authentication)
+}
+
+fn metadata_of(item: &Value, direction: &str) -> Value {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert("direction".to_owned(), Value::String(direction.to_owned()));
+
+    if let Some(tls) = item.get("tls").and_then(Value::as_object) {
+        let mut public_tls = serde_json::Map::new();
+        if let Some(enabled) = tls.get("enabled").and_then(Value::as_bool) {
+            public_tls.insert("enabled".to_owned(), Value::Bool(enabled));
+        }
+        if let Some(server_name) = tls.get("server_name").and_then(Value::as_str) {
+            public_tls.insert(
+                "serverName".to_owned(),
+                Value::String(server_name.to_owned()),
+            );
+        }
+        if let Some(alpn) = tls.get("alpn").and_then(Value::as_array) {
+            let values = alpn
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| Value::String(value.to_owned()))
+                .collect::<Vec<_>>();
+            if !values.is_empty() {
+                public_tls.insert("alpn".to_owned(), Value::Array(values));
+            }
+        }
+        if tls
+            .get("certificate_path")
+            .and_then(Value::as_str)
+            .is_some()
+        {
+            public_tls.insert("insecure".to_owned(), Value::Bool(true));
+        }
+        if let Some(reality) = tls.get("reality").and_then(Value::as_object)
+            && reality.get("enabled").and_then(Value::as_bool) == Some(true)
+        {
+            let mut public_reality = serde_json::Map::new();
+            public_reality.insert("enabled".to_owned(), Value::Bool(true));
+            if let Some(public_key) = reality
+                .get("private_key")
+                .and_then(Value::as_str)
+                .and_then(reality_public_key)
+            {
+                public_reality.insert("publicKey".to_owned(), Value::String(public_key));
+            }
+            if let Some(short_id) = reality
+                .get("short_id")
+                .and_then(Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(Value::as_str)
+            {
+                public_reality.insert("shortId".to_owned(), Value::String(short_id.to_owned()));
+            }
+            public_tls.insert("reality".to_owned(), Value::Object(public_reality));
+        }
+        if !public_tls.is_empty() {
+            metadata.insert("tls".to_owned(), Value::Object(public_tls));
+        }
+    }
+
+    if let Some(transport) = item.get("transport").and_then(Value::as_object) {
+        let mut public_transport = serde_json::Map::new();
+        for field in ["type", "path"] {
+            if let Some(value) = transport.get(field).and_then(Value::as_str) {
+                public_transport.insert(field.to_owned(), Value::String(value.to_owned()));
+            }
+        }
+        if let Some(host) = transport
+            .get("headers")
+            .and_then(Value::as_object)
+            .and_then(|headers| headers.get("Host").or_else(|| headers.get("host")))
+            .and_then(Value::as_str)
+        {
+            public_transport.insert("host".to_owned(), Value::String(host.to_owned()));
+        }
+        if !public_transport.is_empty() {
+            metadata.insert("transport".to_owned(), Value::Object(public_transport));
+        }
+    }
+    if let Some(value) = item.get("congestion_control").and_then(Value::as_str) {
+        metadata.insert(
+            "congestionControl".to_owned(),
+            Value::String(value.to_owned()),
+        );
+    }
+    Value::Object(metadata)
+}
+
+fn reality_public_key(private_key: &str) -> Option<String> {
+    let bytes: [u8; 32] = URL_SAFE_NO_PAD.decode(private_key).ok()?.try_into().ok()?;
+    let public_key = MontgomeryPoint::mul_base_clamped(bytes).to_bytes();
+    Some(URL_SAFE_NO_PAD.encode(public_key))
 }
 
 fn endpoint_of(item: &Value, direction: &str) -> String {
@@ -395,6 +490,7 @@ fn write_private_atomic_candidate(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -426,6 +522,39 @@ mod tests {
         assert!(!serialized.contains("server-private-key"));
         assert!(!serialized.contains("short_id"));
         assert!(!serialized.contains("unknown"));
+    }
+
+    #[test]
+    fn reports_public_reality_client_parameters_without_the_private_key() {
+        let private_key = URL_SAFE_NO_PAD.encode(
+            hex::decode("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+                .unwrap(),
+        );
+        let config = json!({
+            "inbounds": [{
+                "type": "vless", "tag": "reality", "listen": "::", "listen_port": 443,
+                "users": [{"uuid": "client-uuid", "flow": "xtls-rprx-vision"}],
+                "tls": {
+                    "enabled": true,
+                    "server_name": "addons.mozilla.org",
+                    "reality": {"enabled": true, "private_key": private_key, "short_id": ["0123456789abcdef"]}
+                }
+            }]
+        });
+        let mut tunnels = Vec::new();
+        discover_section(&config, "inbounds", "inbound", "healthy", &mut tunnels);
+        let metadata = &tunnels[0].metadata;
+        assert_eq!(
+            metadata["tls"]["reality"]["publicKey"],
+            URL_SAFE_NO_PAD.encode(
+                hex::decode("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a")
+                    .unwrap()
+            )
+        );
+        assert_eq!(metadata["tls"]["serverName"], "addons.mozilla.org");
+        assert_eq!(metadata["tls"]["reality"]["shortId"], "0123456789abcdef");
+        assert!(!metadata.to_string().contains("private_key"));
+        assert!(!metadata.to_string().contains(&private_key));
     }
 
     #[tokio::test]
