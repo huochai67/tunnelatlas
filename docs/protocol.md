@@ -51,6 +51,15 @@ Authorization: Bearer <READ_TOKEN>
 
 返回仍在线且未撤销 Agent 的 inbound，最多 1000 条。每项的 `authentication` 包含解密后的认证参数，因此 `READ_TOKEN` 本身属于敏感凭据；`ADMIN_TOKEN` 也具有读取权限。
 
+## 节点订阅 API
+
+```http
+GET /v1/subscription?siteId=site-home
+Authorization: Bearer <READ_TOKEN>
+```
+
+返回 `text/plain` 格式的标准 Base64；解码后的内容为每行一个节点 URI。接口只接受 `READ_TOKEN`，并仅输出在线 Agent 上状态为 `healthy`、端点和认证信息完整的受支持节点。当前支持 Shadowsocks、VLESS、VMess、Trojan、Hysteria 2、TUIC 和 AnyTLS；不受支持或信息不足的 inbound 会被忽略。`siteId` 可选，省略时返回全部站点，最多读取 1000 条 inbound。
+
 ## 管理控制台
 
 Worker Static Assets 在 `/` 提供管理控制台，`/v1/*` 和 `/healthz` 仍优先进入 Worker 脚本。控制台接受管理或只读 token，并仅存入当前标签页的 `sessionStorage`；管理 token 可创建站点和注册码，只读 token 只能查看在线隧道。

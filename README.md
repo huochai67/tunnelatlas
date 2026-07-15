@@ -23,6 +23,7 @@ TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧
 - inbound 认证参数按字段白名单提取，并以 AES-256-GCM 加密后写入 D1。
 - D1 保存 Agent、隧道状态和最后活跃时间。
 - 发现 API 只返回在线 Agent 的隧道。
+- 节点订阅 API 使用 `READ_TOKEN` 鉴权，提供 Base64 编码的节点 URI 列表。
 - 同域管理控制台展示站点、Agent 和隧道，并可创建站点及一次性注册码。
 - Rust CLI 支持 `check`、`enroll`、`report-once` 和 `run`。
 

@@ -1,6 +1,7 @@
 import { authenticateAgent } from "./auth";
 import { decryptJson, encryptJson, randomId, randomToken, sha256Hex } from "./crypto";
 import { bearer, HttpError, json, problem, readJson } from "./http";
+import { encodeSubscription, type SubscriptionTunnel } from "./subscription";
 import type { EnrollmentBody, Env, ReportBody } from "./types";
 import { validateEnrollment, validateReport } from "./validation";
 
@@ -137,6 +138,39 @@ async function listTunnels(request: Request, env: Env): Promise<Response> {
   return json({ tunnels, serverTime: new Date().toISOString() });
 }
 
+async function nodeSubscription(request: Request, env: Env): Promise<Response> {
+  requireToken(request, env.READ_TOKEN);
+  const url = new URL(request.url);
+  const siteId = url.searchParams.get("siteId");
+  const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
+  const cutoff = new Date(Date.now() - offlineSeconds * 1000).toISOString();
+  const query = `SELECT t.id, t.agent_id, t.site_id, t.name, t.kind, t.endpoint, t.protocol,
+    t.status, t.metadata_json, t.authentication_ciphertext, t.last_seen_at, a.name AS agent_name
+    FROM tunnels t JOIN agents a ON a.id = t.agent_id
+    WHERE a.revoked_at IS NULL AND a.last_seen_at >= ? ${siteId ? "AND t.site_id = ?" : ""}
+    ORDER BY t.site_id, a.name, t.name LIMIT 1000`;
+  const statement = siteId ? env.DB.prepare(query).bind(cutoff, siteId) : env.DB.prepare(query).bind(cutoff);
+  const result = await statement.all<Record<string, unknown>>();
+  const tunnels = await Promise.all(result.results.map(async (row): Promise<SubscriptionTunnel> => {
+    const tunnel = await tunnelFromRow(row, env);
+    return {
+      agentName: String(tunnel.agentName),
+      authentication: tunnel.authentication,
+      endpoint: String(tunnel.endpoint),
+      name: String(tunnel.name),
+      protocol: String(tunnel.protocol),
+      siteId: String(tunnel.siteId),
+      status: tunnel.status,
+    };
+  }));
+  return new Response(encodeSubscription(tunnels), {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/plain; charset=utf-8",
+    },
+  });
+}
+
 async function adminOverview(request: Request, env: Env): Promise<Response> {
   requireToken(request, env.ADMIN_TOKEN);
   const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
@@ -185,6 +219,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST" && url.pathname === "/v1/enrollments:exchange") return exchangeEnrollment(request, env);
   if (request.method === "POST" && url.pathname === "/v1/agent/report") return report(request, env);
   if (request.method === "GET" && url.pathname === "/v1/tunnels") return listTunnels(request, env);
+  if (request.method === "GET" && url.pathname === "/v1/subscription") return nodeSubscription(request, env);
   return problem(404, "Not Found");
 }
 

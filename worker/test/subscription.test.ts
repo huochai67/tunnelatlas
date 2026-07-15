@@ -1,0 +1,73 @@
+import { describe, expect, it } from "vitest";
+import worker from "../src/index";
+import { encodeSubscription, subscriptionUris, type SubscriptionTunnel } from "../src/subscription";
+import type { Env } from "../src/types";
+
+function tunnel(overrides: Partial<SubscriptionTunnel> = {}): SubscriptionTunnel {
+  return {
+    agentName: "edge-01",
+    authentication: { method: "2022-blake3-aes-128-gcm", password: "secret" },
+    endpoint: "proxy.example.com:8388",
+    name: "public",
+    protocol: "shadowsocks",
+    siteId: "site-home",
+    status: "healthy",
+    ...overrides,
+  };
+}
+
+describe("node subscription", () => {
+  it("encodes healthy nodes as a base64 list of standard URIs", () => {
+    const tunnels = [
+      tunnel(),
+      tunnel({
+        authentication: { users: [{ name: "alice", uuid: "client-uuid", flow: "xtls-rprx-vision" }] },
+        endpoint: "[2001:db8::1]:443",
+        name: "vless",
+        protocol: "vless",
+      }),
+    ];
+    const uris = subscriptionUris(tunnels);
+    expect(uris).toHaveLength(2);
+    expect(uris[0]).toMatch(/^ss:\/\/[A-Za-z0-9_-]+@proxy\.example\.com:8388#/);
+    expect(uris[1]).toBe("vless://client-uuid@[2001:db8::1]:443?encryption=none&flow=xtls-rprx-vision#site-home%2Fedge-01%2Fvless%2Falice");
+    expect(new TextDecoder().decode(Uint8Array.from(atob(encodeSubscription(tunnels)), (character) => character.charCodeAt(0))))
+      .toBe(uris.join("\n"));
+  });
+
+  it("omits unhealthy, unsupported, and incomplete nodes", () => {
+    expect(subscriptionUris([
+      tunnel({ status: "failed" }),
+      tunnel({ protocol: "socks" }),
+      tunnel({ authentication: {} }),
+    ])).toEqual([]);
+  });
+
+  it("requires READ_TOKEN and does not accept ADMIN_TOKEN", async () => {
+    const env = {
+      ADMIN_TOKEN: "admin-token",
+      READ_TOKEN: "read-token",
+      DB: {
+        prepare: () => {
+          const statement = {
+            bind: () => statement,
+            all: async () => ({ results: [] }),
+          };
+          return statement;
+        },
+      },
+    } as unknown as Env;
+
+    const missing = await worker.fetch(new Request("https://atlas.example/v1/subscription"), env);
+    expect(missing.status).toBe(401);
+    const admin = await worker.fetch(new Request("https://atlas.example/v1/subscription", {
+      headers: { Authorization: "Bearer admin-token" },
+    }), env);
+    expect(admin.status).toBe(401);
+    const allowed = await worker.fetch(new Request("https://atlas.example/v1/subscription", {
+      headers: { Authorization: "Bearer read-token" },
+    }), env);
+    expect(allowed.status).toBe(200);
+    expect(await allowed.text()).toBe("");
+  });
+});
