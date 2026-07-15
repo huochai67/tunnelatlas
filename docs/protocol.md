@@ -64,4 +64,4 @@ Authorization: Bearer <READ_TOKEN>
 
 ## 管理控制台
 
-Worker Static Assets 在 `/` 提供管理控制台，`/v1/*` 和 `/healthz` 仍优先进入 Worker 脚本。控制台接受管理或只读 token，并仅存入当前标签页的 `sessionStorage`；管理 token 可创建站点和注册码，也可永久删除节点或站点，只读 token 只能查看在线隧道。删除正在运行的节点前应先在节点上停止或卸载 Agent，否则它会持续收到未授权响应且无法自动重新注册。
+Worker Static Assets 在 `/` 提供管理控制台，`/v1/*` 和 `/healthz` 仍优先进入 Worker 脚本。控制台接受管理或只读 token，并仅存入当前标签页的 `sessionStorage`；管理 token 可创建站点和注册码，也可永久删除节点或站点，只读 token 只能查看在线隧道。生成注册码后，控制台会按当前 Worker 地址和站点生成可复制的一键部署命令，默认使用目标主机名作为节点名并创建 Shadowsocks inbound。删除正在运行的节点前应先在节点上停止或卸载 Agent，否则它会持续收到未授权响应且无法自动重新注册。

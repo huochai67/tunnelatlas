@@ -14,8 +14,11 @@ const els = {
   siteSelect: $("#site-select"), siteFilter: $("#site-filter"), createToken: $("#create-token-button"), deleteSite: $("#delete-site-button"),
   siteForm: $("#site-form"), showSiteForm: $("#show-site-form"), readonlyNote: $("#readonly-note"),
   tokenResult: $("#token-result"), tokenValue: $("#token-value"), tokenExpiry: $("#token-expiry"),
+  deployCommand: $("#deploy-command"), copyDeployCommand: $("#copy-deploy-command"),
   search: $("#tunnel-search"), toast: $("#toast"),
 };
+
+const INSTALLER_URL = "https://raw.githubusercontent.com/huochai67/tunnelatlas/main/deploy/install.sh";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -145,6 +148,17 @@ function setSync(type, text) { els.syncDot.className = type; els.syncLabel.textC
 function toast(message) { els.toast.textContent = message; els.toast.classList.add("show"); setTimeout(() => els.toast.classList.remove("show"), 2600); }
 function statusText(value) { return ({ online: "在线", stale: "陈旧", offline: "离线", revoked: "已撤销" })[value] || value; }
 function relativeTime(value) { if (!value) return "从未"; const seconds = Math.max(0, (Date.now() - Date.parse(value)) / 1000); if (seconds < 60) return `${Math.floor(seconds)} 秒前`; if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`; return `${Math.floor(seconds / 3600)} 小时前`; }
+function shellQuote(value) { return `'${String(value).replace(/'/g, `'"'"'`)}'`; }
+function deploymentCommand(token, siteId) {
+  return [
+    `curl -fsSL ${shellQuote(INSTALLER_URL)} -o /tmp/tunnelatlas-install.sh && \\`,
+    `sudo env TUNNELATLAS_ENROLLMENT_TOKEN=${shellQuote(token)} bash /tmp/tunnelatlas-install.sh \\`,
+    "  --non-interactive \\",
+    `  --server-url ${shellQuote(window.location.origin)} \\`,
+    `  --site-id ${shellQuote(siteId)} && \\`,
+    "rm -f /tmp/tunnelatlas-install.sh",
+  ].join("\n");
+}
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[char]); }
 function escapeAttr(value) { return escapeHtml(value); }
 
@@ -154,10 +168,10 @@ els.session.addEventListener("click", () => state.token ? disconnect() : openAut
 els.refresh.addEventListener("click", () => refresh());
 $("#agent-filter").addEventListener("click", (event) => { const button = event.target.closest("button[data-filter]"); if (!button) return; state.agentFilter = button.dataset.filter; document.querySelectorAll("#agent-filter button").forEach((item) => item.classList.toggle("active", item === button)); renderAgents(state.overview.agents || []); });
 els.search.addEventListener("input", () => renderTunnels(state.overview.tunnels || [])); els.siteFilter.addEventListener("change", () => renderTunnels(state.overview.tunnels || []));
-els.siteSelect.addEventListener("change", () => { const disabled = state.mode !== "admin" || !els.siteSelect.value; els.createToken.disabled = disabled; els.deleteSite.disabled = disabled; });
+els.siteSelect.addEventListener("change", () => { const disabled = state.mode !== "admin" || !els.siteSelect.value; els.createToken.disabled = disabled; els.deleteSite.disabled = disabled; els.tokenResult.classList.add("hidden"); });
 els.showSiteForm.addEventListener("click", () => els.siteForm.classList.remove("hidden")); $("#cancel-site").addEventListener("click", () => els.siteForm.classList.add("hidden"));
-els.siteForm.addEventListener("submit", async (event) => { event.preventDefault(); try { const site = await api("/v1/admin/sites", { method: "POST", body: JSON.stringify({ id: $("#site-id").value.trim(), name: $("#site-name").value.trim() }) }); els.siteForm.reset(); els.siteForm.classList.add("hidden"); await refresh({ quiet: true }); els.siteSelect.value = site.id; els.createToken.disabled = false; toast("站点已创建"); } catch (error) { toast(error.message); } });
-els.createToken.addEventListener("click", async () => { try { const data = await api(`/v1/admin/sites/${encodeURIComponent(els.siteSelect.value)}/enrollment-tokens`, { method: "POST" }); els.tokenValue.textContent = data.token; els.tokenExpiry.textContent = `${new Date(data.expiresAt).toLocaleTimeString("zh-CN", { hour12: false })} 失效`; els.tokenResult.classList.remove("hidden"); } catch (error) { toast(error.message); } });
+els.siteForm.addEventListener("submit", async (event) => { event.preventDefault(); try { const site = await api("/v1/admin/sites", { method: "POST", body: JSON.stringify({ id: $("#site-id").value.trim(), name: $("#site-name").value.trim() }) }); els.siteForm.reset(); els.siteForm.classList.add("hidden"); els.tokenResult.classList.add("hidden"); await refresh({ quiet: true }); els.siteSelect.value = site.id; els.createToken.disabled = false; toast("站点已创建"); } catch (error) { toast(error.message); } });
+els.createToken.addEventListener("click", async () => { try { const data = await api(`/v1/admin/sites/${encodeURIComponent(els.siteSelect.value)}/enrollment-tokens`, { method: "POST" }); els.tokenValue.textContent = data.token; els.tokenExpiry.textContent = `${new Date(data.expiresAt).toLocaleTimeString("zh-CN", { hour12: false })} 失效`; els.deployCommand.textContent = deploymentCommand(data.token, data.siteId); els.tokenResult.classList.remove("hidden"); } catch (error) { toast(error.message); } });
 els.deleteSite.addEventListener("click", async () => {
   const siteId = els.siteSelect.value;
   const site = (state.overview.sites || []).find((item) => item.id === siteId);
@@ -184,5 +198,6 @@ els.agents.addEventListener("click", async (event) => {
   } catch (error) { button.disabled = false; toast(error.message); }
 });
 $("#copy-token").addEventListener("click", async () => { await navigator.clipboard.writeText(els.tokenValue.textContent); toast("注册码已复制"); });
+els.copyDeployCommand.addEventListener("click", async () => { await navigator.clipboard.writeText(els.deployCommand.textContent); toast("一键部署命令已复制"); });
 
 if (state.token) { refresh().then(startAutoRefresh); } else { render(); openAuth(); }
