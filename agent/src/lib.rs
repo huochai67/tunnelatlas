@@ -1,5 +1,11 @@
 pub mod client;
 pub mod config;
 pub mod identity;
+pub mod links;
+pub mod manager;
 pub mod protocol;
+pub mod render;
+pub mod runtime;
+pub mod secrets;
+pub mod service;
 pub mod sing_box;

@@ -30,7 +30,7 @@ curl -X POST http://127.0.0.1:8787/v1/admin/sites/site-home/enrollment-tokens \
 
 ## Agent
 
-安装 sing-box，复制 `agent/config.example.yaml` 和 `agent/sing-box.example.json` 到配置中指定的位置，填入注册码后运行：
+安装 sing-box，复制并调整 `agent/config.example.yaml`，填入注册码后运行。Agent 会自行生成 secrets、证书和 sing-box JSON：
 
 ```bash
 cargo run -p tunnelatlasd -- \
@@ -46,7 +46,7 @@ cargo run -p tunnelatlasd -- \
   --identity /tmp/tunnelatlas-identity.json report-once
 ```
 
-`check` 同时执行 `sing-box check -c`。注册成功后应从配置文件删除一次性 `enrollmentToken`。服务模式使用 `run` 子命令；参考 `deploy/tunnelatlas.service`。不要同时运行发行版自带的 `sing-box.service`，否则两个 supervisor 会争用端口和 TUN 设备。
+`check` 同时渲染配置并执行 `sing-box check -c`。注册成功后应从配置文件删除一次性 `enrollmentToken`。服务模式使用 `run` 子命令；参考 `deploy/tunnelatlas.service`。不要同时运行发行版自带的 `sing-box.service`，否则两个 supervisor 会争用端口。
 
 ## 验证
 

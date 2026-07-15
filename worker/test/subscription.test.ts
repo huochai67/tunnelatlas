@@ -56,6 +56,26 @@ describe("node subscription", () => {
     ])).toEqual([]);
   });
 
+  it("creates links for every Agent-managed protocol", () => {
+    const tls = { enabled: true, serverName: "www.bing.com", alpn: ["h3"], insecure: true };
+    const reality = {
+      enabled: true,
+      serverName: "addons.mozilla.org",
+      reality: { enabled: true, publicKey: "public-key", shortId: "0123456789abcdef" },
+    };
+    const uris = subscriptionUris([
+      tunnel({ protocol: "hysteria2", endpoint: "proxy.example.com:20001", authentication: { users: [{ password: "hy2-secret" }] }, metadata: { tls } }),
+      tunnel({ protocol: "tuic", endpoint: "proxy.example.com:20002", authentication: { users: [{ uuid: "tuic-uuid", password: "tuic-secret" }] }, metadata: { tls, congestionControl: "bbr" } }),
+      tunnel({ protocol: "anytls", endpoint: "proxy.example.com:20003", authentication: { users: [{ name: "tunnelatlas", password: "anytls-secret" }] }, metadata: { tls: reality } }),
+      tunnel({ protocol: "vmess", endpoint: "proxy.example.com:20004", authentication: { users: [{ uuid: "vmess-uuid" }] }, metadata: { transport: { type: "ws", path: "/vmess", host: "cdn.example.com" } } }),
+    ]);
+    expect(uris).toHaveLength(4);
+    expect(uris[0]).toMatch(/^hysteria2:\/\//);
+    expect(uris[1]).toMatch(/^tuic:\/\//);
+    expect(uris[2]).toMatch(/^anytls:\/\//);
+    expect(uris[3]).toMatch(/^vmess:\/\//);
+  });
+
   it("requires READ_TOKEN and does not accept ADMIN_TOKEN", async () => {
     const env = {
       ADMIN_TOKEN: "admin-token",

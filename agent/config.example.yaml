@@ -5,11 +5,24 @@ enrollmentToken: replace-with-one-time-token
 reportIntervalSeconds: 60
 labels:
   region: home
+publicHost: proxy.example.com
+runtimePath: /tmp/tunnelatlas-dev/runtime.json
 singBox:
   binaryPath: /usr/local/bin/sing-box
-  sourceConfigPath: /etc/tunnelatlas/sing-box.json
-  managedConfigPath: /var/lib/tunnelatlas/sing-box.json
-  workingDirectory: /var/lib/tunnelatlas
-  reconcileIntervalSeconds: 5
+  managedConfigPath: /tmp/tunnelatlas-dev/sing-box.json
+  secretsPath: /tmp/tunnelatlas-dev/secrets.json
+  certificatesDirectory: /tmp/tunnelatlas-dev/certificates
+  workingDirectory: /tmp/tunnelatlas-dev
   restartDelaySeconds: 5
   shutdownTimeoutSeconds: 10
+protocols:
+  - tag: ss-in
+    listen: "::"
+    port: 8388
+    type: shadowsocks
+    method: 2022-blake3-aes-128-gcm
+  - tag: vless-in
+    listen: "::"
+    port: 443
+    type: vless-reality
+    serverName: addons.mozilla.org

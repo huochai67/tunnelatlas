@@ -1,6 +1,6 @@
 import { authenticateAgent } from "./auth";
 import { decryptJson, encryptJson, randomId, randomToken, sha256Hex } from "./crypto";
-import { externallyReachableEndpoint } from "./endpoints";
+import { externallyReachableEndpoint, observedAddress } from "./endpoints";
 import { bearer, HttpError, json, problem, readJson } from "./http";
 import { encodeSubscription, type SubscriptionTunnel } from "./subscription";
 import type { EnrollmentBody, Env, ReportBody } from "./types";
@@ -64,9 +64,7 @@ async function report(request: Request, env: Env): Promise<Response> {
   catch { throw new HttpError(400, "Invalid JSON body"); }
   validateReport(body);
   const now = new Date().toISOString();
-  // Accept reports from older agents during rolling upgrades, but persist only
-  // inbound definitions. Outbounds previously stored by an agent are removed by
-  // the snapshot cleanup below.
+  // Persist only inbound definitions and remove records absent from the snapshot.
   const tunnels = body.tunnels.filter((tunnel) => tunnel.kind === "sing-box/inbound");
   const encryptedTunnels = await Promise.all(tunnels.map(async (tunnel) => ({
     tunnel: {
@@ -109,7 +107,11 @@ async function report(request: Request, env: Env): Promise<Response> {
   }
   const results = await env.DB.batch(statements);
   if (Number(results[0]?.meta.changes ?? 0) !== 1) throw new HttpError(409, "A newer report was accepted first");
-  return json({ acceptedSequence: agent.sequence, serverTime: now });
+  return json({
+    acceptedSequence: agent.sequence,
+    serverTime: now,
+    observedAddress: observedAddress(request.headers.get("CF-Connecting-IP")),
+  });
 }
 
 async function tunnelFromRow(row: Record<string, unknown>, env: Env): Promise<Record<string, unknown>> {

@@ -2,7 +2,7 @@
 
 TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧道注册和发现服务。
 
-本机 `tunnelatlasd` 维护 sing-box 配置和进程，并定期批量上报从配置中发现的 inbound 及其连接认证参数；Cloudflare Worker 不下发部署命令，只负责注册、鉴权、加密存储和查询。业务流量不经过 TunnelAtlas。
+本机 `tunnelatlasd` 维护协议声明、私密凭据、sing-box 配置和进程，并定期批量上报当前已应用的 inbound；Cloudflare Worker 不下发部署命令，只负责注册、鉴权、加密存储和查询。业务流量不经过 TunnelAtlas。
 
 ## 仓库结构
 
@@ -25,7 +25,7 @@ TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧
 - 发现 API 只返回在线 Agent 的隧道。
 - 节点订阅 API 使用 `READ_TOKEN` 鉴权，提供 Base64 编码的节点 URI 列表。
 - 同域管理控制台展示站点、Agent 和隧道，并可创建站点及一次性注册码。
-- Rust CLI 支持 `check`、`enroll`、`report-once` 和 `run`。
+- Rust CLI 提供交互式中文管理菜单，以及协议、链接、配置、服务、更新和卸载命令。
 
 ## 快速开始
 
@@ -44,7 +44,7 @@ sudo bash /tmp/tunnelatlas-install.sh \
 rm -f /tmp/tunnelatlas-install.sh
 ```
 
-脚本会静默询问注册码，自动识别 x86_64/ARM64 及 systemd/OpenRC、校验并安装最新 Release、注册节点及启用开机服务。如果缺少 sing-box 或 `/etc/sing-box/config.json`，脚本会通过固定版本并校验过的 [`huochai67/singbox-deploy`](https://github.com/huochai67/singbox-deploy) 安装器自动部署随机端口的 Shadowsocks；已有二进制和配置不会被改写。
+脚本会静默询问注册码，自动识别 x86_64/ARM64 及 systemd/OpenRC、校验并安装最新 Release 和 sing-box、创建随机凭据、注册节点并启用开机服务。安装器仅支持干净系统；发现旧 TunnelAtlas 状态、外部 sing-box 配置或正在运行的独立 sing-box 服务时会直接停止。
 
 可按参考安装器的协议选项部署，例如 SS 和 VLESS Reality：
 
@@ -58,15 +58,26 @@ sudo bash /tmp/tunnelatlas-install.sh \
   --sing-box-reality-sni addons.mozilla.org
 ```
 
-使用 `--skip-sing-box-install` 可要求必须预先存在 sing-box；使用 `--install-sing-box` 可在首次接入时强制重新部署，原配置会备份为 `config.json.pre-tunnelatlas`。部署完成后，脚本停用独立的 sing-box 服务并交由 `tunnelatlasd` 监管。再次执行脚本会保留节点配置和身份，仅升级程序并重启服务。
+使用 `--skip-sing-box-install` 可要求必须预先存在 sing-box；使用 `--install-sing-box` 可强制安装 sing-box。Agent 永远不会读取 `/etc/sing-box/config.json`，生成配置位于 `/var/lib/tunnelatlas/sing-box.json`。
+
+日常管理：
+
+```bash
+sudo tunnelatlasd manage
+sudo tunnelatlasd protocol list
+sudo tunnelatlasd protocol add reality --port 443 --server-name addons.mozilla.org
+sudo tunnelatlasd protocol rotate vless-in
+sudo tunnelatlasd links
+sudo tunnelatlasd service status
+```
 
 ## 发布 Agent
 
 将 `agent/Cargo.toml` 中的版本提交到 `main` 后，推送同版本的 `vX.Y.Z` 标签会触发 GitHub Actions。流水线通过检查后自动创建 GitHub Release，并附带 Linux x86_64、Linux ARM64 的 glibc/musl 压缩包及 `SHA256SUMS`：
 
 ```bash
-git tag v0.0.5
-git push origin v0.0.5
+git tag v0.0.8
+git push origin v0.0.8
 ```
 
 标签版本必须与 `tunnelatlasd` 的 Cargo 包版本一致，否则发布会停止。

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { externallyReachableEndpoint } from "../src/endpoints";
+import { externallyReachableEndpoint, observedAddress } from "../src/endpoints";
 
 describe("externally reachable endpoints", () => {
   it("replaces wildcard listeners with the reporting agent public IPv4 address", () => {
@@ -14,5 +14,11 @@ describe("externally reachable endpoints", () => {
   it("preserves explicit hosts and ignores invalid connecting addresses", () => {
     expect(externallyReachableEndpoint("proxy.example.com:443", "203.0.113.8")).toBe("proxy.example.com:443");
     expect(externallyReachableEndpoint("[::]:443", "not-an-ip")).toBe("[::]:443");
+  });
+
+  it("returns only validated report source addresses", () => {
+    expect(observedAddress("203.0.113.8")).toBe("203.0.113.8");
+    expect(observedAddress("2001:db8::8")).toBe("2001:db8::8");
+    expect(observedAddress("not-an-ip")).toBeNull();
   });
 });

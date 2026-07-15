@@ -70,4 +70,6 @@ impl<'a> From<&'a ObservedTunnel> for TunnelReport<'a> {
 pub struct ReportResponse {
     pub accepted_sequence: u64,
     pub server_time: String,
+    #[serde(default)]
+    pub observed_address: Option<String>,
 }

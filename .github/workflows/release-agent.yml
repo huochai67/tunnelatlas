@@ -76,7 +76,6 @@ jobs:
           mkdir -p "dist/$archive"
           install -m 755 "target/${{ matrix.target }}/release/tunnelatlasd" "dist/$archive/tunnelatlasd"
           install -m 644 agent/config.example.yaml "dist/$archive/config.example.yaml"
-          install -m 644 agent/sing-box.example.json "dist/$archive/sing-box.example.json"
           install -m 644 deploy/tunnelatlas.service "dist/$archive/tunnelatlas.service"
           install -m 755 deploy/tunnelatlas.initd "dist/$archive/tunnelatlas.initd"
           install -m 755 deploy/install.sh "dist/$archive/install.sh"
