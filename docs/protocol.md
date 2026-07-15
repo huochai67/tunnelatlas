@@ -58,7 +58,7 @@ GET /v1/subscription?siteId=site-home
 Authorization: Bearer <READ_TOKEN>
 ```
 
-返回 `text/plain` 格式的标准 Base64；解码后的内容为每行一个节点 URI。接口只接受 `READ_TOKEN`，并仅输出在线 Agent 上状态为 `healthy`、端点和认证信息完整的受支持节点。当前支持 Shadowsocks、VLESS、VMess、Trojan、Hysteria 2、TUIC 和 AnyTLS；不受支持或信息不足的 inbound 会被忽略。Agent 上报通配监听地址时，Worker 使用 Cloudflare 看到的 Agent 公网 IP 作为订阅地址。Reality 公钥由 0.0.6 及以上版本的 Agent 从私钥本地推导，只上报公钥、SNI 和 short-id，私钥不会离开节点；升级后的首次报告会刷新已有节点。`siteId` 可选，省略时返回全部站点，最多读取 1000 条 inbound。
+返回 `text/plain` 格式的标准 Base64；解码后的内容为每行一个节点 URI。接口只接受 `READ_TOKEN`，并仅输出在线 Agent 上状态为 `healthy`、端点和认证信息完整的受支持节点。当前支持 Shadowsocks、VLESS、VMess、Trojan、Hysteria 2、TUIC 和 AnyTLS；不受支持或信息不足的 inbound 会被忽略。Agent 上报通配监听地址时，Worker 使用 Cloudflare 看到的 Agent 公网 IP 作为订阅地址。Reality 公钥由 0.0.7 及以上版本的 Agent 从私钥本地推导，只上报公钥、SNI 和 short-id，私钥不会离开节点；升级后的首次报告会刷新已有节点。`siteId` 可选，省略时返回全部站点，最多读取 1000 条 inbound。
 
 ## 管理控制台
 

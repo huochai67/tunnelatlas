@@ -312,7 +312,11 @@ fn authentication_of(item: &Value) -> Value {
     const AUTH_FIELDS: &[&str] = &["name", "username", "password", "uuid", "flow", "token"];
     let mut authentication = serde_json::Map::new();
     for field in ["method", "password", "token"] {
-        if let Some(value) = item.get(field).and_then(Value::as_str) {
+        if let Some(value) = item
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
             authentication.insert(field.to_owned(), Value::String(value.to_owned()));
         }
     }
@@ -324,7 +328,11 @@ fn authentication_of(item: &Value) -> Value {
             .map(|user| {
                 let mut filtered_user = serde_json::Map::new();
                 for field in AUTH_FIELDS {
-                    if let Some(value) = user.get(*field).and_then(Value::as_str) {
+                    if let Some(value) = user
+                        .get(*field)
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                    {
                         filtered_user.insert((*field).to_owned(), Value::String(value.to_owned()));
                     }
                 }
@@ -383,12 +391,7 @@ fn metadata_of(item: &Value, direction: &str) -> Value {
             {
                 public_reality.insert("publicKey".to_owned(), Value::String(public_key));
             }
-            if let Some(short_id) = reality
-                .get("short_id")
-                .and_then(Value::as_array)
-                .and_then(|values| values.first())
-                .and_then(Value::as_str)
-            {
+            if let Some(short_id) = reality.get("short_id").and_then(reality_short_id) {
                 public_reality.insert("shortId".to_owned(), Value::String(short_id.to_owned()));
             }
             public_tls.insert("reality".to_owned(), Value::Object(public_reality));
@@ -424,6 +427,13 @@ fn metadata_of(item: &Value, direction: &str) -> Value {
         );
     }
     Value::Object(metadata)
+}
+
+fn reality_short_id(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .or_else(|| value.as_array()?.first()?.as_str())
+        .filter(|value| !value.is_empty())
 }
 
 fn reality_public_key(private_key: &str) -> Option<String> {
@@ -533,11 +543,11 @@ mod tests {
         let config = json!({
             "inbounds": [{
                 "type": "vless", "tag": "reality", "listen": "::", "listen_port": 443,
-                "users": [{"uuid": "client-uuid", "flow": "xtls-rprx-vision"}],
+                "users": [{"name": "", "uuid": "client-uuid", "flow": "xtls-rprx-vision"}],
                 "tls": {
                     "enabled": true,
                     "server_name": "addons.mozilla.org",
-                    "reality": {"enabled": true, "private_key": private_key, "short_id": ["0123456789abcdef"]}
+                    "reality": {"enabled": true, "private_key": private_key, "short_id": "0123456789abcdef"}
                 }
             }]
         });
@@ -553,6 +563,8 @@ mod tests {
         );
         assert_eq!(metadata["tls"]["serverName"], "addons.mozilla.org");
         assert_eq!(metadata["tls"]["reality"]["shortId"], "0123456789abcdef");
+        assert_eq!(tunnels[0].authentication["users"][0]["uuid"], "client-uuid");
+        assert!(tunnels[0].authentication["users"][0].get("name").is_none());
         assert!(!metadata.to_string().contains("private_key"));
         assert!(!metadata.to_string().contains(&private_key));
     }
