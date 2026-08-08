@@ -16,6 +16,12 @@ describe("externally reachable endpoints", () => {
     expect(externallyReachableEndpoint("[::]:443", "not-an-ip")).toBe("[::]:443");
   });
 
+  it("preserves explicit custom endpoints even when the connecting IP differs", () => {
+    expect(externallyReachableEndpoint("proxy.example.com:443", "198.51.100.9")).toBe("proxy.example.com:443");
+    expect(externallyReachableEndpoint("203.0.113.8:443", "198.51.100.9")).toBe("203.0.113.8:443");
+    expect(externallyReachableEndpoint("[2001:db8::8]:443", "198.51.100.9")).toBe("[2001:db8::8]:443");
+  });
+
   it("returns only validated report source addresses", () => {
     expect(observedAddress("203.0.113.8")).toBe("203.0.113.8");
     expect(observedAddress("2001:db8::8")).toBe("2001:db8::8");

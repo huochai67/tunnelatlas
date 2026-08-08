@@ -359,6 +359,34 @@ singBox: {}
     }
 
     #[test]
+    fn public_host_accepts_supported_address_forms_and_rejects_ports() {
+        for host in [
+            "proxy.example.com",
+            "203.0.113.8",
+            "2001:db8::8",
+            "[2001:db8::8]",
+        ] {
+            let config: Config = serde_yaml::from_str(&format!(
+                "serverUrl: https://example.com\nsingBox: {{}}\npublicHost: \"{host}\"\n"
+            ))
+            .unwrap();
+            config
+                .validate()
+                .unwrap_or_else(|error| panic!("{host:?} must validate: {error}"));
+        }
+        for host in ["", "   ", "/", "proxy.example.com:443", "[2001:db8::8]:443"] {
+            let config: Config = serde_yaml::from_str(&format!(
+                "serverUrl: https://example.com\nsingBox: {{}}\npublicHost: \"{host}\"\n"
+            ))
+            .unwrap();
+            assert!(
+                config.validate().is_err(),
+                "{host:?} must be rejected by validate"
+            );
+        }
+    }
+
+    #[test]
     fn protocol_options_use_camel_case() {
         let yaml = r#"
 serverUrl: https://example.com

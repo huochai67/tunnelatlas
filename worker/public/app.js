@@ -13,7 +13,7 @@ const els = {
   clock: $("#server-clock"), date: $("#server-date"), nodes: $("#node-list"), tunnels: $("#tunnel-table"),
   nodeFilter: $("#node-filter"), nodeForm: $("#node-form"), nodeName: $("#node-name"), readonlyNote: $("#readonly-note"),
   tokenResult: $("#token-result"), tokenValue: $("#token-value"), tokenExpiry: $("#token-expiry"), deployLabel: $("#deploy-label"),
-  deployCommand: $("#deploy-command"), copyDeployCommand: $("#copy-deploy-command"), search: $("#tunnel-search"), toast: $("#toast"),
+  deployPublicHost: $("#deploy-public-host"), deployCommand: $("#deploy-command"), copyDeployCommand: $("#copy-deploy-command"), search: $("#tunnel-search"), toast: $("#toast"),
 };
 
 const INSTALLER_URL = "https://raw.githubusercontent.com/huochai67/tunnelatlas/main/deploy/install.sh";
@@ -158,7 +158,8 @@ function showEnrollment(data, nodeName) {
   els.tokenValue.textContent = data.token;
   els.tokenExpiry.textContent = `${new Date(data.expiresAt).toLocaleTimeString("zh-CN", { hour12: false })} 失效`;
   els.deployLabel.textContent = `${nodeName} · 一键部署（默认 Shadowsocks）`;
-  els.deployCommand.textContent = deploymentCommand(data.token);
+  els.deployPublicHost.value = "";
+  updateDeploymentCommand();
   els.tokenResult.classList.remove("hidden");
 }
 
@@ -170,14 +171,19 @@ function toast(message) { els.toast.textContent = message; els.toast.classList.a
 function statusText(value) { return ({ pending: "待接入", online: "在线", stale: "陈旧", offline: "离线" })[value] || value; }
 function relativeTime(value) { if (!value) return "从未"; const seconds = Math.max(0, (Date.now() - Date.parse(value)) / 1000); if (seconds < 60) return `${Math.floor(seconds)} 秒前`; if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`; return `${Math.floor(seconds / 3600)} 小时前`; }
 function shellQuote(value) { return `'${String(value).replace(/'/g, `'"'"'`)}'`; }
-function deploymentCommand(token) {
+function deploymentCommand(token, publicHost = "") {
   return [
     `curl -fsSL ${shellQuote(INSTALLER_URL)} -o /tmp/tunnelatlas-install.sh && \\`,
     `sudo env TUNNELATLAS_ENROLLMENT_TOKEN=${shellQuote(token)} bash /tmp/tunnelatlas-install.sh \\`,
     "  --non-interactive \\",
-    `  --server-url ${shellQuote(window.location.origin)} && \\`,
+    publicHost
+      ? `  --server-url ${shellQuote(window.location.origin)} \\\n  --sing-box-host ${shellQuote(publicHost)} && \\`
+      : `  --server-url ${shellQuote(window.location.origin)} && \\`,
     "rm -f /tmp/tunnelatlas-install.sh",
   ].join("\n");
+}
+function updateDeploymentCommand() {
+  els.deployCommand.textContent = deploymentCommand(els.tokenValue.textContent.trim(), els.deployPublicHost.value.trim());
 }
 function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[character]); }
 function escapeAttr(value) { return escapeHtml(value); }
@@ -225,6 +231,7 @@ els.nodes.addEventListener("click", async (event) => {
     toast(action === "reset" ? "接入身份已重置" : "新注册码已生成");
   } catch (error) { button.disabled = false; toast(error.message); }
 });
+els.deployPublicHost.addEventListener("input", updateDeploymentCommand);
 $("#copy-token").addEventListener("click", async () => { await navigator.clipboard.writeText(els.tokenValue.textContent); toast("注册码已复制"); });
 els.copyDeployCommand.addEventListener("click", async () => { await navigator.clipboard.writeText(els.deployCommand.textContent); toast("一键部署命令已复制"); });
 

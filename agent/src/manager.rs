@@ -118,6 +118,15 @@ pub enum ConfigCommand {
     Show,
     Check,
     Apply,
+    SetPublicHost {
+        host: String,
+        #[arg(long)]
+        no_restart: bool,
+    },
+    ClearPublicHost {
+        #[arg(long)]
+        no_restart: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -255,6 +264,25 @@ pub async fn config(command: ConfigCommand, config_path: &Path) -> Result<()> {
         ConfigCommand::Apply => transaction(config_path, true, |_, _| Ok(()))
             .await
             .map(|_| println!("Configuration applied")),
+        ConfigCommand::SetPublicHost { host, no_restart } => {
+            let value = host.clone();
+            transaction(config_path, !no_restart, move |config, _| {
+                config.public_host = Some(value);
+                Ok(())
+            })
+            .await?;
+            println!("Public host set to {host}");
+            Ok(())
+        }
+        ConfigCommand::ClearPublicHost { no_restart } => {
+            transaction(config_path, !no_restart, move |config, _| {
+                config.public_host = None;
+                Ok(())
+            })
+            .await?;
+            println!("Public host cleared; Worker address detection enabled");
+            Ok(())
+        }
     }
 }
 
@@ -383,7 +411,7 @@ pub fn uninstall(config_path: &Path, identity_path: &Path, with_sing_box: bool) 
 pub async fn manage(config_path: &Path, identity_path: &Path) -> Result<()> {
     loop {
         println!(
-            "\nTunnelAtlas 管理\n1. 协议列表\n2. 添加协议\n3. 修改协议端口\n4. 删除协议\n5. 轮换凭据\n6. 显示链接\n7. 服务状态\n8. 启动服务\n9. 停止服务\n10. 重启服务\n11. 查看日志\n12. 检查配置\n13. 更新 Agent\n14. 更新 sing-box\n15. 卸载 TunnelAtlas\n16. 卸载 TunnelAtlas 和 sing-box\n0. 退出"
+            "\nTunnelAtlas 管理\n1. 协议列表\n2. 添加协议\n3. 修改协议端口\n4. 删除协议\n5. 轮换凭据\n6. 显示链接\n7. 服务状态\n8. 启动服务\n9. 停止服务\n10. 重启服务\n11. 查看日志\n12. 检查配置\n13. 更新 Agent\n14. 更新 sing-box\n15. 卸载 TunnelAtlas\n16. 卸载 TunnelAtlas 和 sing-box\n17. 设置上报 IP/域名\n0. 退出"
         );
         let choice = prompt("请选择: ")?;
         let result = match choice.trim() {
@@ -460,6 +488,7 @@ pub async fn manage(config_path: &Path, identity_path: &Path) -> Result<()> {
                     bail!("已取消")
                 }
             }
+            "17" => interactive_public_host(config_path).await,
             "0" => return Ok(()),
             _ => {
                 eprintln!("无效选项");
@@ -507,6 +536,40 @@ async fn interactive_add(config_path: &Path) -> Result<()> {
         config_path,
     )
     .await
+}
+
+async fn interactive_public_host(config_path: &Path) -> Result<()> {
+    let current = Config::load(config_path)?;
+    println!(
+        "当前上报地址: {}",
+        current.public_host.as_deref().unwrap_or("自动识别")
+    );
+    let choice = prompt("操作 [1=设置地址, 2=恢复自动识别, 0=取消]: ")?;
+    match choice.as_str() {
+        "" | "0" => Ok(()),
+        "1" => {
+            let host = prompt("公网 IP 或域名: ")?;
+            config(
+                ConfigCommand::SetPublicHost {
+                    host,
+                    no_restart: false,
+                },
+                config_path,
+            )
+            .await
+        }
+        "2" => {
+            config(
+                ConfigCommand::ClearPublicHost { no_restart: false },
+                config_path,
+            )
+            .await
+        }
+        _ => {
+            eprintln!("无效选项");
+            Ok(())
+        }
+    }
 }
 
 async fn transaction<F>(config_path: &Path, restart: bool, modify: F) -> Result<()>
@@ -1152,5 +1215,93 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("duplicate protocol port"));
         assert_eq!(fs::read(&config_path).unwrap(), yaml_before);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn public_host_commands_persist_and_clear_without_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("sing-box");
+        fs::write(&binary, "#!/bin/sh\nif [ \"$1\" = check ]; then exit 0; fi\nif [ \"$1\" = format ]; then exit 0; fi\nexit 0\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let config_path = directory.path().join("config.yaml");
+        let fixture = Config {
+            server_url: "https://example.com".into(),
+            enrollment_token: None,
+            report_interval_seconds: 60,
+            labels: BTreeMap::new(),
+            public_host: None,
+            runtime_path: directory
+                .path()
+                .join("runtime.json")
+                .to_string_lossy()
+                .into(),
+            sing_box: SingBoxSettings {
+                binary_path: binary.to_string_lossy().into(),
+                managed_config_path: directory
+                    .path()
+                    .join("sing-box.json")
+                    .to_string_lossy()
+                    .into(),
+                secrets_path: directory
+                    .path()
+                    .join("secrets.json")
+                    .to_string_lossy()
+                    .into(),
+                certificates_directory: directory
+                    .path()
+                    .join("certificates")
+                    .to_string_lossy()
+                    .into(),
+                working_directory: None,
+                restart_delay_seconds: 1,
+                shutdown_timeout_seconds: 1,
+            },
+            protocols: vec![],
+        };
+        fixture.save(&config_path).unwrap();
+
+        config(
+            ConfigCommand::SetPublicHost {
+                host: "proxy.example.com".into(),
+                no_restart: true,
+            },
+            &config_path,
+        )
+        .await
+        .unwrap();
+        let saved = Config::load(&config_path).unwrap();
+        assert_eq!(
+            saved.public_host.as_deref(),
+            Some("proxy.example.com"),
+            "custom domain must serialize as publicHost"
+        );
+
+        config(
+            ConfigCommand::SetPublicHost {
+                host: "auto".into(),
+                no_restart: true,
+            },
+            &config_path,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            Config::load(&config_path).unwrap().public_host.as_deref(),
+            Some("auto"),
+            "literal single-label host must be stored verbatim"
+        );
+
+        config(
+            ConfigCommand::ClearPublicHost { no_restart: true },
+            &config_path,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            Config::load(&config_path).unwrap().public_host,
+            None,
+            "clear must restore automatic Worker address detection"
+        );
     }
 }

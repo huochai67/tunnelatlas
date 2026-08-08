@@ -325,4 +325,72 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn public_host_endpoint_formatting_adds_exactly_one_bracket_pair() {
+        let directory = tempdir().unwrap();
+        let base = Config {
+            server_url: "https://example.com".into(),
+            enrollment_token: None,
+            report_interval_seconds: 60,
+            labels: BTreeMap::new(),
+            public_host: None,
+            runtime_path: directory
+                .path()
+                .join("runtime.json")
+                .to_string_lossy()
+                .into(),
+            protocols: vec![ProtocolSpec {
+                tag: "p0".into(),
+                listen: "::".into(),
+                port: 443,
+                kind: ProtocolKind::Shadowsocks {
+                    method: "2022-blake3-aes-128-gcm".into(),
+                },
+            }],
+            sing_box: SingBoxSettings {
+                binary_path: "/bin/true".into(),
+                managed_config_path: directory
+                    .path()
+                    .join("config.json")
+                    .to_string_lossy()
+                    .into(),
+                secrets_path: directory
+                    .path()
+                    .join("secrets.json")
+                    .to_string_lossy()
+                    .into(),
+                certificates_directory: directory.path().join("certs").to_string_lossy().into(),
+                working_directory: None,
+                restart_delay_seconds: 1,
+                shutdown_timeout_seconds: 1,
+            },
+        };
+        for (host, expected) in [
+            ("proxy.example.com", "proxy.example.com:443"),
+            ("203.0.113.8", "203.0.113.8:443"),
+            ("2001:db8::8", "[2001:db8::8]:443"),
+            ("[2001:db8::8]", "[2001:db8::8]:443"),
+        ] {
+            let config = Config {
+                public_host: Some(host.into()),
+                ..base.clone()
+            };
+            let mut secrets = SecretStore::default();
+            secrets.reconcile(&config).unwrap();
+            let rendered = render(&config, &secrets, "healthy").unwrap();
+            assert_eq!(rendered.tunnels.len(), 1);
+            let endpoint = &rendered.tunnels[0].endpoint;
+            assert_eq!(endpoint, expected, "endpoint for public host {host:?}");
+            assert_eq!(
+                endpoint.matches('[').count(),
+                endpoint.matches(']').count(),
+                "brackets must stay balanced for {host:?}"
+            );
+            assert!(
+                endpoint.matches('[').count() <= 1,
+                "IPv6 forms must produce at most one bracket pair for {host:?}"
+            );
+        }
+    }
 }
