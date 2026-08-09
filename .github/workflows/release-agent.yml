@@ -5,10 +5,6 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to release without a v prefix (e.g. 0.0.11); must match tunnelatlasd package version"
-        required: true
 
 permissions:
   contents: read
@@ -21,6 +17,8 @@ jobs:
   verify:
     name: Verify release
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,19 +26,22 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Check tag and package version
+        id: check
         shell: bash
         run: |
           package_version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(next(package["version"] for package in json.load(sys.stdin)["packages"] if package["name"] == "tunnelatlasd"))')"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag_version="${{ inputs.version }}"
+            version="$package_version"
           else
             tag_version="${GITHUB_REF_NAME#v}"
+            if [[ "$package_version" != "$tag_version" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match tunnelatlasd package version $package_version" >&2
+              exit 1
+            fi
+            version="$tag_version"
           fi
-          [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid version: $tag_version" >&2; exit 1; }
-          if [[ "$package_version" != "$tag_version" ]]; then
-            echo "Version $tag_version does not match tunnelatlasd package version $package_version" >&2
-            exit 1
-          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing TunnelAtlas $version"
       - name: Format
         run: cargo fmt --all -- --check
       - name: Check deployment scripts
@@ -81,11 +82,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            version="${{ inputs.version }}"
-          else
-            version="${GITHUB_REF_NAME#v}"
-          fi
+          version="${{ needs.verify.outputs.version }}"
           archive="tunnelatlasd-${version}-${{ matrix.platform }}"
           mkdir -p "dist/$archive"
           install -m 755 "target/${{ matrix.target }}/release/tunnelatlasd" "dist/$archive/tunnelatlasd"
@@ -103,7 +100,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, verify]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,11 +117,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          tag="v${{ needs.verify.outputs.version }}"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag="v${{ inputs.version }}"
             args=(--target "$GITHUB_SHA")
           else
-            tag="$GITHUB_REF_NAME"
             args=(--verify-tag)
           fi
           gh release create "$tag" \
