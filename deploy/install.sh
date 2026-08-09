@@ -293,7 +293,7 @@ curl -fL --retry 3 -o "$TMP_DIR/$ARCHIVE" "$BASE_URL/$ARCHIVE" || die "release a
 curl -fL --retry 3 -o "$TMP_DIR/SHA256SUMS" "$BASE_URL/SHA256SUMS" || die "release checksums unavailable"
 EXPECTED_SUM="$(awk -v archive="$ARCHIVE" '$2 == archive || $2 == "./" archive { print $1; exit }' "$TMP_DIR/SHA256SUMS")"
 [[ "$EXPECTED_SUM" =~ ^[0-9a-fA-F]{64}$ ]] || die "archive checksum missing"
-printf '%s  %s\n' "$EXPECTED_SUM" "$TMP_DIR/$ARCHIVE" | sha256sum -c -s - || die "release checksum verification failed"
+printf '%s  %s\n' "$EXPECTED_SUM" "$TMP_DIR/$ARCHIVE" | sha256sum -c - >/dev/null || die "release checksum verification failed"
 tar -C "$TMP_DIR" --no-same-owner -xzf "$TMP_DIR/$ARCHIVE"
 PACKAGE_DIR="$TMP_DIR/tunnelatlasd-${VERSION_NUMBER}-${PLATFORM}"
 [[ -x "$PACKAGE_DIR/tunnelatlasd" ]] || die "release does not contain tunnelatlasd"
