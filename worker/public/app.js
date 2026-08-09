@@ -157,7 +157,7 @@ function renderTunnels(tunnels) {
 function showEnrollment(data, nodeName) {
   els.tokenValue.textContent = data.token;
   els.tokenExpiry.textContent = `${new Date(data.expiresAt).toLocaleTimeString("zh-CN", { hour12: false })} 失效`;
-  els.deployLabel.textContent = `${nodeName} · 一键部署（默认 Shadowsocks）`;
+  els.deployLabel.textContent = `${nodeName} · 一键部署（默认 VLESS Reality）`;
   els.deployPublicHost.value = "";
   updateDeploymentCommand();
   els.tokenResult.classList.remove("hidden");
@@ -176,6 +176,7 @@ function deploymentCommand(token, publicHost = "") {
     `curl -fsSL ${shellQuote(INSTALLER_URL)} -o /tmp/tunnelatlas-install.sh && \\`,
     `sudo env TUNNELATLAS_ENROLLMENT_TOKEN=${shellQuote(token)} bash /tmp/tunnelatlas-install.sh \\`,
     "  --non-interactive \\",
+    "  --sing-box-protocols reality \\",
     publicHost
       ? `  --server-url ${shellQuote(window.location.origin)} \\\n  --sing-box-host ${shellQuote(publicHost)} && \\`
       : `  --server-url ${shellQuote(window.location.origin)} && \\`,
