@@ -6,6 +6,16 @@ export interface Env {
   ENROLLMENT_PEPPER: string;
   CREDENTIALS_KEY: string;
   AGENT_OFFLINE_SECONDS?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_ZONE_NAME?: string;
+}
+
+export interface CloudflareFrontendState {
+  hostname: string;
+  status: string;
+  sourceEndpoint: string;
+  error: string | null;
+  updatedAt: string | null;
 }
 
 export interface EnrollmentBody {

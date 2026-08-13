@@ -9,6 +9,8 @@
 | POST | `/v1/admin/nodes` | 创建待接入节点并生成首次注册码 |
 | POST | `/v1/admin/nodes/{nodeId}/enrollment-tokens` | 为待接入节点废止旧码并生成新注册码 |
 | POST | `/v1/admin/nodes/{nodeId}/enrollment:reset` | 撤销旧 Agent 身份、清空隧道并生成新注册码 |
+| PUT | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/cloudflare` | 启用/重试/重新同步 VMess-WS 隧道的 Cloudflare 前端 |
+| DELETE | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/cloudflare` | 停用前端：删除代理 DNS、Flexible SSL 与 Origin 端口规则 |
 | DELETE | `/v1/admin/nodes/{nodeId}` | 永久删除节点、注册码和隧道 |
 | GET | `/v1/admin/overview` | 获取控制台所需的节点和隧道概况 |
 
@@ -69,6 +71,12 @@ https://atlas.example/v1/subscription?nodeId=node_xxx&token=<READ_TOKEN>
 ```
 
 返回 `text/plain` 格式的标准 Base64；解码后每行一个节点 URI。接口只接受 `READ_TOKEN`，并仅输出在线节点上状态为 `healthy`、端点和认证信息完整的受支持 inbound。当前支持 Shadowsocks、VLESS Reality、VMess WebSocket、Hysteria 2、TUIC 和 AnyTLS Reality。订阅显示名称使用 `节点名称/协议名称/用户`。URL token 可能进入浏览器历史、代理或访问日志；支持请求头时仍应优先使用 Bearer 认证。
+
+### Cloudflare 前端覆盖
+
+对已启用 Cloudflare 前端的 VMess-WS 隧道，仅当前端状态为 `active` 时订阅输出才覆盖为：`add`/`sni`/`host` = 生成的 `ta-` 主机名、`port=443`、`tls=tls`，WebSocket 路径、UUID 和显示名称保持不变。`provisioning`、`error`、`deleting` 或未启用状态一律回退到直连端点，因此端点变更后的重同步窗口内订阅不会指向过期地址。非 VMess 协议不受影响。
+
+两条管理路由只接受 `ADMIN_TOKEN`。`PUT` 是幂等操作（创建、重试、重新同步共用），`DELETE` 先删除远程资源再移除 D1 跟踪；进行中的操作通过 5 分钟租约互斥，并发请求返回 409。节点重置或删除前会同步停用全部已跟踪前端，远程清理失败时节点操作中止并保留跟踪记录。
 
 ## 管理控制台
 

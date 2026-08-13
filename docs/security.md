@@ -13,4 +13,5 @@
 - `secrets.json`、候选配置、托管配置、私钥和导入证书均以 `0600` 原子写入；协议 YAML 不保存生成的凭据。
 - API 对请求体大小、隧道数量、字符串长度和状态枚举设限。
 
-节点重置会清除服务端公钥、序列和隧道，使旧 Agent 身份立即失效。当前限制：`tunnelatlasd` 仍以 root 运行以支持 TUN 等 sing-box 能力；身份文件尚未接入 TPM/系统 keyring；管理员 token 暂无 RBAC；D1 中的 endpoint 和 metadata 是明文；`CREDENTIALS_KEY` 尚无在线轮换流程，直接更换会使旧密文不可读，直到对应 Agent 再次上报。生产公开部署前必须补齐权限降级、审计、速率限制和密钥轮换。
+- 节点重置会清除服务端公钥、序列和隧道，使旧 Agent 身份立即失效。当前限制：`tunnelatlasd` 仍以 root 运行以支持 TUN 等 sing-box 能力；身份文件尚未接入 TPM/系统 keyring；管理员 token 暂无 RBAC；D1 中的 endpoint 和 metadata 是明文；`CREDENTIALS_KEY` 尚无在线轮换流程，直接更换会使旧密文不可读，直到对应 Agent 再次上报。生产公开部署前必须补齐权限降级、审计、速率限制和密钥轮换。
+- Cloudflare 前端的 Flexible SSL 模式下，Cloudflare 到源站的 WebSocket 连接不加密（源站看到的是明文 WS）。建议源站防火墙只允许 Cloudflare IP 段（https://www.cloudflare.com/ips/）访问该端口，并知晓直连源站仍是绕过前端的路径；不要把 Flexible 模式当作传输加密替代品，它只解决边缘证书与 CDN 接入。源站隧道认证（VMess UUID）不变，WAF 规则继续生效。

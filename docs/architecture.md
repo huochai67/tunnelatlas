@@ -13,6 +13,10 @@ flowchart LR
 
 Worker 不管理本机进程、不下发配置，也不转发隧道业务流量。Agent 从 TunnelAtlas YAML 协议声明和本地 secrets 渲染配置，调用 sing-box 自身校验后原子写入托管配置，再监督 `sing-box run -c <managed-config>`。
 
+## 可选 Cloudflare 数据面跳点
+
+启用 VMess-WS 隧道的 Cloudflare 前端后，数据面变为 `客户端 → Cloudflare 边缘（WSS 443）→ 源站 WS 端点`。Worker 只负责控制面：解析 zone、创建代理 DNS 记录、启用 WebSockets、安装精确主机名的 Flexible SSL 配置规则和精确主机名+路径的 Origin 端口改写规则，并把资源 ID 与状态记录在 D1。Worker 仍然不转发 VMess 字节；边缘与源站之间是直连的明文 WS，改写仅发生在目标端口。订阅 URI 在 `active` 期间指向生成的 `ta-` 主机名，其余状态回退直连。
+
 ## 本机收敛流程
 
 1. 读取协议声明，补齐持久化凭据和证书并渲染 JSON。

@@ -75,6 +75,82 @@ describe("node subscription", () => {
     expect(uris[3]).toMatch(/^vmess:\/\//);
   });
 
+  function decodeVmess(uri: string): Record<string, string> {
+    const encoded = uri.slice("vmess://".length);
+    const json = new TextDecoder().decode(Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0)));
+    return JSON.parse(json) as Record<string, string>;
+  }
+
+  function vmessTunnel(overrides: Partial<SubscriptionTunnel> = {}): SubscriptionTunnel {
+    return tunnel({
+      protocol: "vmess",
+      endpoint: "203.0.113.8:10086",
+      authentication: { users: [{ uuid: "vmess-uuid" }] },
+      metadata: { transport: { type: "ws", path: "/vmess", host: "" } },
+      ...overrides,
+    });
+  }
+
+  it("overlays an active Cloudflare frontend on the VMess-WS URI", () => {
+    const uris = subscriptionUris([vmessTunnel({
+      cloudflare: { hostname: "ta-0123456789abcdef0123.example.com", status: "active" },
+    })]);
+    expect(uris).toHaveLength(1);
+    expect(decodeVmess(uris[0])).toEqual({
+      v: "2",
+      ps: "edge-01/public/1",
+      add: "ta-0123456789abcdef0123.example.com",
+      port: "443",
+      id: "vmess-uuid",
+      aid: "0",
+      scy: "auto",
+      net: "ws",
+      type: "none",
+      host: "ta-0123456789abcdef0123.example.com",
+      path: "/vmess",
+      tls: "tls",
+      sni: "ta-0123456789abcdef0123.example.com",
+    });
+  });
+
+  it("keeps the direct endpoint for provisioning, deleting, error, and missing frontends", () => {
+    for (const status of ["provisioning", "deleting", "error"]) {
+      const uris = subscriptionUris([vmessTunnel({
+        cloudflare: { hostname: "ta-0123456789abcdef0123.example.com", status },
+      })]);
+      const node = decodeVmess(uris[0]);
+      expect(node).toMatchObject({
+        add: "203.0.113.8",
+        port: "10086",
+        host: "",
+        tls: "",
+      });
+      expect(node.sni).toBeUndefined();
+    }
+    const without = subscriptionUris([vmessTunnel({ cloudflare: null })]);
+    expect(decodeVmess(without[0])).toMatchObject({ add: "203.0.113.8", port: "10086", tls: "" });
+  });
+
+  it("preserves UUID, display name, and reported path when the frontend is active", () => {
+    const uris = subscriptionUris([vmessTunnel({
+      name: "edge",
+      authentication: { users: [{ name: "alice", uuid: "keep-uuid" }] },
+      cloudflare: { hostname: "ta-0123456789abcdef0123.example.com", status: "active" },
+    })]);
+    const node = decodeVmess(uris[0]);
+    expect(node.id).toBe("keep-uuid");
+    expect(node.ps).toBe("edge-01/edge/alice");
+    expect(node.path).toBe("/vmess");
+    expect(node.net).toBe("ws");
+  });
+
+  it("leaves non-VMess URIs untouched by frontend data", () => {
+    const base = tunnel({ protocol: "shadowsocks" });
+    const plain = subscriptionUris([base])[0];
+    const withFrontend = subscriptionUris([{ ...base, cloudflare: { hostname: "ta-x.example.com", status: "active" } }])[0];
+    expect(withFrontend).toBe(plain);
+  });
+
   it("accepts READ_TOKEN from the bearer header or URL query only", async () => {
     const env = {
       ADMIN_TOKEN: "admin-token",

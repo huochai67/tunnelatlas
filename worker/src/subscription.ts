@@ -8,6 +8,7 @@ export interface SubscriptionTunnel {
   name: string;
   protocol: string;
   status: unknown;
+  cloudflare?: { hostname: string; status: string } | null;
 }
 
 interface Endpoint {
@@ -98,22 +99,25 @@ function userUris(
 
 function vmessUris(tunnel: SubscriptionTunnel, endpoint: Endpoint, authentication: Credentials): string[] {
   const transport = record(record(tunnel.metadata).transport);
+  const frontend = tunnel.cloudflare;
+  const activeFrontend = frontend && frontend.status === "active" && frontend.hostname ? frontend.hostname : null;
   return users(authentication).flatMap((user, index) => {
     const uuid = text(user.uuid);
     if (!uuid) return [];
     const node = {
       v: "2",
       ps: displayName(tunnel, user, index),
-      add: endpoint.host,
-      port: String(endpoint.port),
+      add: activeFrontend ?? endpoint.host,
+      port: activeFrontend ? "443" : String(endpoint.port),
       id: uuid,
       aid: "0",
       scy: "auto",
       net: text(transport.type) ?? "tcp",
       type: "none",
-      host: text(transport.host) ?? "",
+      host: activeFrontend ?? text(transport.host) ?? "",
       path: text(transport.path) ?? "",
-      tls: "",
+      tls: activeFrontend ? "tls" : "",
+      ...(activeFrontend ? { sni: activeFrontend } : {}),
     };
     return [`vmess://${utf8Base64(JSON.stringify(node))}`];
   });

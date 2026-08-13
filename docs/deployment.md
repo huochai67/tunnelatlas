@@ -94,3 +94,41 @@ unset ADMIN_TOKEN READ_TOKEN ENROLLMENT_PEPPER CREDENTIALS_KEY
 ## 5. Migration 约束
 
 自动部署先迁移数据库、后发布代码，因此 migration 必须向后兼容当前线上版本。优先使用新增表、字段和索引；删除或重命名字段应拆成多个版本完成。
+
+## 6. 可选：VMess-WS 隧道的 Cloudflare 前端
+
+Worker 可以为单个 VMess-WS 隧道开通 Cloudflare 前端：生成 `ta-<20位hex>.<zone>` 主机名、创建代理 DNS 记录、启用 WebSockets，并安装精确主机名的 Flexible SSL 配置规则与精确主机名+路径的目标端口改写 Origin 规则。Worker 本身仍然不转发 VMess 字节，流量经 Cloudflare 边缘 TLS 后回源到原直连端点。
+
+### 6.1 前置条件
+
+- 一个处于 **active** 状态、由当前账户拥有的 Cloudflare Zone；`CLOUDFLARE_ZONE_NAME` 填写 zone 顶点（如 `example.com`，不带 `www.` 和尾点）。只使用第一级主机名，确保 Universal SSL 可以签发证书；`ta-` 前缀为 TunnelAtlas 保留，请勿手动占用。
+- 一个**仅限该 zone** 的 API Token，作为 Secret `CLOUDFLARE_API_TOKEN`。最小权限：
+
+| 权限 | 作用 |
+|---|---|
+| Zone → Zone → Read | 解析 zone ID |
+| Zone → DNS → Edit | 创建/更新/删除 `ta-` 代理记录 |
+| Zone → Zone Settings → Edit | 启用 WebSockets |
+| Zone → Config Rules → Edit | Flexible SSL 配置规则 |
+| Zone → Origin Rules → Edit | 目标端口改写规则 |
+
+不要把账户级 Token 交给 Worker。两个变量都不存在或 token 权限不足时，启用操作返回 503/502，错误显示在对应隧道的状态中，不影响 Agent 心跳。
+
+### 6.2 配置与迁移顺序
+
+在 Cloudflare Dashboard 的 Worker 设置中创建 Secret `CLOUDFLARE_API_TOKEN` 与普通变量 `CLOUDFLARE_ZONE_NAME`（`keep_vars` 已启用，自动部署会保留变量）。`0004_tunnel_cloudflare_frontends.sql` 是纯增量 migration，随 `deploy:production` 自动应用，无需手工步骤。
+
+### 6.3 规则配额
+
+Free 计划每个 zone 各 10 条 Config Rules 和 10 条 Origin Rules，每个已启用隧道各消耗 1 条。配额错误会以 `error` 状态保留在隧道记录中，需要先停用其他隧道或升级计划后由管理员重试。
+
+### 6.4 证书传播与冒烟测试
+
+DNS 与 SSL 证书传播通常需要几十秒到几分钟。生产冒烟测试：
+
+1. 在控制台对 VMess-WS 隧道点击「启用 Cloudflare」，等待状态变为「已启用」。
+2. 解码 `/v1/subscription`，确认 `add`/`sni`/`host` 为生成的 `ta-` 主机名、`port=443`、`tls=tls`、路径和 UUID 不变。
+3. 对 `https://<生成主机名><路径>` 发起 HTTP/1.1 WebSocket Upgrade，应返回 `101 Switching Protocols`；同时确认 sing-box 只监听原始端口。
+4. 点击「停用」，确认代理 DNS 与两条规则删除后，D1 跟踪记录才消失。
+
+故障排查使用 Cloudflare Trace（`https://<主机名>/cdn-cgi/trace`）定位 403/5xx；WAF 拦截不会被绕过，VMess 认证强度不变。

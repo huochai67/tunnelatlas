@@ -137,13 +137,35 @@ function renderNodeFilter(nodes) {
   if (["all", ...nodes.map((node) => node.id)].includes(previous)) els.nodeFilter.value = previous;
 }
 
+function cloudflareCell(tunnel) {
+  const cf = tunnel.cloudflare;
+  const host = cf ? `<span class="cf-host">${escapeHtml(cf.hostname)}</span>` : "";
+  if (!cf) {
+    if (state.mode === "admin" && tunnel.protocol === "vmess" && tunnel.metadata?.transport?.type === "ws") {
+      return `<button class="cf-enable" type="button" data-cf-action="enable" data-node-id="${escapeAttr(tunnel.nodeId)}" data-tunnel-id="${escapeAttr(tunnel.id)}">启用 Cloudflare</button>`;
+    }
+    return `<span class="cf-none">—</span>`;
+  }
+  const labels = { provisioning: "开通中", active: "已启用", error: "错误", deleting: "停用中" };
+  const chip = `<span class="cf-status ${escapeAttr(cf.status)}">${labels[cf.status] || escapeHtml(cf.status)}</span>`;
+  if (state.mode !== "admin" || cf.status === "provisioning" || cf.status === "deleting") {
+    return `${host}${chip}`;
+  }
+  const actions = cf.status === "error"
+    ? `<button type="button" data-cf-action="retry" data-node-id="${escapeAttr(tunnel.nodeId)}" data-tunnel-id="${escapeAttr(tunnel.id)}">重试</button>`
+    : `<button type="button" data-cf-action="resync" data-node-id="${escapeAttr(tunnel.nodeId)}" data-tunnel-id="${escapeAttr(tunnel.id)}">重新同步</button>`;
+  const disable = `<button class="cf-disable" type="button" data-cf-action="disable" data-node-id="${escapeAttr(tunnel.nodeId)}" data-tunnel-id="${escapeAttr(tunnel.id)}">停用</button>`;
+  const error = cf.error ? `<small class="cf-error" title="${escapeAttr(cf.error)}">${escapeHtml(cf.error.length > 48 ? `${cf.error.slice(0, 48)}…` : cf.error)}</small>` : "";
+  return `<div class="cf-cell">${host}${chip}<span class="cf-actions">${actions}${disable}</span>${error}</div>`;
+}
+
 function renderTunnels(tunnels) {
   const query = els.search.value.trim().toLowerCase();
   const nodeId = els.nodeFilter.value;
   const filtered = tunnels.filter((tunnel) => (nodeId === "all" || tunnel.nodeId === nodeId)
     && (!query || [tunnel.name, tunnel.endpoint, tunnel.protocol, tunnel.nodeName].join(" ").toLowerCase().includes(query)));
   if (!filtered.length) {
-    els.tunnels.innerHTML = `<tr><td colspan="6" class="table-empty">没有符合条件的隧道</td></tr>`;
+    els.tunnels.innerHTML = `<tr><td colspan="7" class="table-empty">没有符合条件的隧道</td></tr>`;
     return;
   }
   els.tunnels.innerHTML = filtered.map((tunnel) => `<tr>
@@ -151,6 +173,7 @@ function renderTunnels(tunnels) {
     <td class="tunnel-name"><strong>${escapeHtml(tunnel.name)}</strong><small>${escapeHtml(tunnel.nodeName)}</small></td>
     <td>${escapeHtml(tunnel.metadata?.direction || tunnel.kind.split("/").pop())} / ${escapeHtml(tunnel.protocol)}</td>
     <td class="endpoint">${escapeHtml(tunnel.endpoint)}</td><td>${escapeHtml(tunnel.nodeName)}</td>
+    <td class="cf-column">${cloudflareCell(tunnel)}</td>
     <td>${relativeTime(tunnel.lastSeenAt)}</td></tr>`).join("");
 }
 
@@ -233,6 +256,21 @@ els.nodes.addEventListener("click", async (event) => {
   } catch (error) { button.disabled = false; toast(error.message); }
 });
 els.deployPublicHost.addEventListener("input", updateDeploymentCommand);
+els.tunnels.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-cf-action]");
+  if (!button || state.mode !== "admin") return;
+  const { nodeId, tunnelId } = button.dataset;
+  const action = button.dataset.cfAction;
+  if (action === "disable" && !window.confirm("确定停用该隧道的 Cloudflare 前端吗？\n\n将删除代理 DNS 记录和两条规则，订阅会立即回退到直连地址。")) return;
+  button.disabled = true;
+  try {
+    const path = `/v1/admin/nodes/${encodeURIComponent(nodeId)}/tunnels/${encodeURIComponent(tunnelId)}/cloudflare`;
+    if (action === "disable") await api(path, { method: "DELETE" });
+    else await api(path, { method: "PUT" });
+    await refresh({ quiet: true });
+    toast(action === "disable" ? "Cloudflare 前端已停用" : "Cloudflare 前端已同步");
+  } catch (error) { button.disabled = false; toast(error.message); }
+});
 $("#copy-token").addEventListener("click", async () => { await navigator.clipboard.writeText(els.tokenValue.textContent); toast("注册码已复制"); });
 els.copyDeployCommand.addEventListener("click", async () => { await navigator.clipboard.writeText(els.deployCommand.textContent); toast("一键部署命令已复制"); });
 

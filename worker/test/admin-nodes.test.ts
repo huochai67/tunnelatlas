@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import type { Env } from "../src/types";
 
@@ -7,15 +7,80 @@ interface DatabaseCall {
   values: unknown[];
 }
 
-function testEnv(firstRows: Array<Record<string, unknown> | null> = []) {
+function cloudflareOk(result: unknown, status = 200): Response {
+  return new Response(JSON.stringify({ success: true, result }), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function cloudflareError(status: number, messages: string[]): Response {
+  return new Response(JSON.stringify({
+    success: false,
+    errors: messages.map((message) => ({ code: 0, message })),
+  }), { status, headers: { "Content-Type": "application/json" } });
+}
+
+function mockCloudflare(handler: (path: string, method: string) => Response | null) {
+  const fetchMock = (input: string | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const path = url.pathname.replace(/^\/client\/v4/, "") + url.search;
+    const method = (init?.method ?? "GET").toUpperCase();
+    const response = handler(path, method);
+    if (response) return Promise.resolve(response);
+    return Promise.reject(new Error(`unhandled Cloudflare request: ${method} ${path}`));
+  };
+  vi.stubGlobal("fetch", fetchMock);
+  return { restore: () => vi.unstubAllGlobals() };
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+function frontendRow(nodeId = "node_one", tunnelId = "inbound-1"): Record<string, unknown> {
+  return {
+    node_id: nodeId,
+    tunnel_id: tunnelId,
+    hostname: "ta-00000000000000000000.example.com",
+    zone_id: "zone_1",
+    zone_name: "example.com",
+    status: "active",
+    operation_id: null,
+    dns_record_id: "dns_1",
+    config_ruleset_id: "cfg_ruleset_1",
+    config_rule_id: "cfg_rule_1",
+    origin_ruleset_id: "org_ruleset_1",
+    origin_rule_id: "org_rule_1",
+    source_endpoint: "203.0.113.8:10086",
+    source_path: "/vmess",
+    last_error: null,
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
+  };
+}
+
+function testEnv(
+  firstRows: Array<Record<string, unknown> | null> = [],
+  frontendRows: Array<Record<string, unknown>> = [],
+) {
   const calls: DatabaseCall[] = [];
   const rows = [...firstRows];
+  const frontends = new Map<string, Record<string, unknown>>();
+  for (const row of frontendRows) frontends.set(`${row.node_id}\u0000${row.tunnel_id}`, row);
   const db = {
     prepare(sql: string) {
       const call = { sql, values: [] as unknown[] };
       const statement = {
         bind(...values: unknown[]) { call.values = values; calls.push(call); return statement; },
-        async first() { return rows.shift() ?? null; },
+        async first() {
+          if (sql.includes("tunnel_cloudflare_frontends")) {
+            const nodeId = call.values[0] as string;
+            const tunnelId = call.values[1] as string;
+            return frontends.get(`${nodeId}\u0000${tunnelId}`) ?? null;
+          }
+          return rows.shift() ?? null;
+        },
+        async all() {
+          if (sql.includes("tunnel_cloudflare_frontends")) return { results: [...frontends.values()] };
+          return { results: [] };
+        },
+        async run() { return { meta: { changes: 1 } }; },
       };
       return statement;
     },
@@ -30,6 +95,8 @@ function testEnv(firstRows: Array<Record<string, unknown> | null> = []) {
       READ_TOKEN: "read-token",
       ENROLLMENT_PEPPER: "pepper",
       DB: db,
+      CLOUDFLARE_API_TOKEN: "cf-token",
+      CLOUDFLARE_ZONE_NAME: "example.com",
     } as unknown as Env,
   };
 }
@@ -90,6 +157,36 @@ describe("admin node management", () => {
     expect(calls.some((call) => call.sql.includes("DELETE FROM tunnels"))).toBe(true);
   });
 
+  it("deprovisions tracked frontends before resetting a node", async () => {
+    const cf = mockCloudflare((_path, method) => (method === "DELETE" ? cloudflareOk({ id: "gone" }) : null));
+    const { env, calls } = testEnv(
+      [{ id: "node_one", name: "edge", public_key: "old-key" }],
+      [frontendRow()],
+    );
+    const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_one/enrollment:reset", "POST"), env);
+
+    expect(response.status).toBe(200);
+    const frontendDeleteIndex = calls.findIndex((call) => call.sql.includes("DELETE FROM tunnel_cloudflare_frontends"));
+    const nodeResetIndex = calls.findIndex((call) => call.sql.includes("public_key = NULL"));
+    expect(frontendDeleteIndex).toBeGreaterThanOrEqual(0);
+    expect(nodeResetIndex).toBeGreaterThan(frontendDeleteIndex);
+    cf.restore();
+  });
+
+  it("aborts node reset when Cloudflare cleanup fails, preserving tracking", async () => {
+    const cf = mockCloudflare(() => cloudflareError(500, ["upstream down"]));
+    const { env, calls } = testEnv(
+      [{ id: "node_one", name: "edge", public_key: "old-key" }],
+      [frontendRow()],
+    );
+    const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_one/enrollment:reset", "POST"), env);
+
+    expect(response.status).toBe(502);
+    expect(calls.some((call) => call.sql.includes("public_key = NULL"))).toBe(false);
+    expect(calls.some((call) => call.sql.includes("SET status = 'error'"))).toBe(true);
+    cf.restore();
+  });
+
   it("deletes a node and rejects removed legacy routes", async () => {
     const { env, calls } = testEnv([{ id: "node_old", name: "old-node" }]);
     const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_old", "DELETE"), env);
@@ -101,6 +198,29 @@ describe("admin node management", () => {
     expect(calls.some((call) => call.sql.includes("DELETE FROM nodes"))).toBe(true);
     expect(legacySite.status).toBe(404);
     expect(legacyAgent.status).toBe(404);
+  });
+
+  it("deprovisions tracked frontends before deleting a node", async () => {
+    const cf = mockCloudflare((_path, method) => (method === "DELETE" ? cloudflareOk({ id: "gone" }) : null));
+    const { env, calls } = testEnv([{ id: "node_one", name: "edge" }], [frontendRow()]);
+    const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_one", "DELETE"), env);
+
+    expect(response.status).toBe(200);
+    const frontendDeleteIndex = calls.findIndex((call) => call.sql.includes("DELETE FROM tunnel_cloudflare_frontends"));
+    const nodeDeleteIndex = calls.findIndex((call) => call.sql.includes("DELETE FROM nodes"));
+    expect(frontendDeleteIndex).toBeGreaterThanOrEqual(0);
+    expect(nodeDeleteIndex).toBeGreaterThan(frontendDeleteIndex);
+    cf.restore();
+  });
+
+  it("aborts node deletion when Cloudflare cleanup fails, preserving tracking", async () => {
+    const cf = mockCloudflare(() => cloudflareError(500, ["upstream down"]));
+    const { env, calls } = testEnv([{ id: "node_one", name: "edge" }], [frontendRow()]);
+    const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_one", "DELETE"), env);
+
+    expect(response.status).toBe(502);
+    expect(calls.some((call) => call.sql.includes("DELETE FROM nodes"))).toBe(false);
+    cf.restore();
   });
 
   it("requires ADMIN_TOKEN before touching the database", async () => {
