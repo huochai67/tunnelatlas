@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { externallyReachableEndpoint, observedAddress, parseOriginEndpoint, validWebSocketPath } from "../src/endpoints";
+import { externallyReachableEndpoint, observedAddress, parseOriginEndpoint, validFrontendAddress, validWebSocketPath } from "../src/endpoints";
 
 describe("externally reachable endpoints", () => {
   it("replaces wildcard listeners with the reporting agent public IPv4 address", () => {
@@ -83,5 +83,25 @@ describe("origin endpoint parsing", () => {
     expect(validWebSocketPath("/a#b")).toBe(false);
     expect(validWebSocketPath("/a\\b")).toBe(false);
     expect(validWebSocketPath(`/${"a".repeat(2049)}`)).toBe(false);
+  });
+});
+
+describe("frontend address validation", () => {
+  it("accepts public addresses, hostnames, and IPv6", () => {
+    expect(validFrontendAddress("104.16.132.229")).toBe(true);
+    expect(validFrontendAddress("edge.example.com")).toBe(true);
+    expect(validFrontendAddress("edge")).toBe(true);
+    expect(validFrontendAddress("2001:db8::1")).toBe(true);
+    expect(validFrontendAddress(" 104.16.132.229 ")).toBe(true);
+  });
+
+  it("rejects private, wildcard, ported, and malformed values", () => {
+    expect(validFrontendAddress("192.168.1.5")).toBe(false);
+    expect(validFrontendAddress("10.0.0.1")).toBe(false);
+    expect(validFrontendAddress("[::1]")).toBe(false);
+    expect(validFrontendAddress("*.example.com")).toBe(false);
+    expect(validFrontendAddress("104.16.132.229:443")).toBe(false);
+    expect(validFrontendAddress("not a host")).toBe(false);
+    expect(validFrontendAddress("")).toBe(false);
   });
 });

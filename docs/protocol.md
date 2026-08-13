@@ -74,7 +74,7 @@ https://atlas.example/v1/subscription?nodeId=node_xxx&token=<READ_TOKEN>
 
 ### Cloudflare 前端覆盖
 
-对已启用 Cloudflare 前端的 VMess-WS 隧道，仅当前端状态为 `active` 时订阅输出才覆盖为：`add`/`sni`/`host` = 生成的 `ta-` 主机名、`port=443`、`tls=tls`，WebSocket 路径、UUID 和显示名称保持不变。`provisioning`、`error`、`deleting` 或未启用状态一律回退到直连端点，因此端点变更后的重同步窗口内订阅不会指向过期地址。非 VMess 协议不受影响。
+对已启用 Cloudflare 前端的 VMess-WS 隧道，仅当前端状态为 `active` 时订阅输出才覆盖为：`sni`/`host` = 生成的 `ta-` 主机名、`port=443`、`tls=tls`，WebSocket 路径、UUID 和显示名称保持不变；`add` 默认为该主机名，若配置了普通变量 `CLOUDFLARE_PREFERRED_ADDRESS`（优选 IP/域名，公网 IPv4/IPv6 或主机名，拒绝私网与通配符），则替换为该地址，便于节点优选；变量非法或未设置时回退主机名。`provisioning`、`error`、`deleting` 或未启用状态一律回退到直连端点，因此端点变更后的重同步窗口内订阅不会指向过期地址。非 VMess 协议不受影响。
 
 两条管理路由只接受 `ADMIN_TOKEN`。`PUT` 是幂等操作（创建、重试、重新同步共用），`DELETE` 先删除远程资源再移除 D1 跟踪；进行中的操作通过 5 分钟租约互斥，并发请求返回 409。节点重置或删除前会同步停用全部已跟踪前端，远程清理失败时节点操作中止并保留跟踪记录。
 

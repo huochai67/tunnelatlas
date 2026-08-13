@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import worker from "../src/index";
+import { bytesToBase64Url, encryptJson } from "../src/crypto";
 import { encodeSubscription, subscriptionUris, type SubscriptionTunnel } from "../src/subscription";
 import type { Env } from "../src/types";
 
@@ -131,6 +132,30 @@ describe("node subscription", () => {
     expect(decodeVmess(without[0])).toMatchObject({ add: "203.0.113.8", port: "10086", tls: "" });
   });
 
+  it("uses the preferred address as add while keeping host and SNI", () => {
+    const uris = subscriptionUris([vmessTunnel({
+      cloudflare: { hostname: "ta-0123456789abcdef0123.example.com", status: "active", address: "104.16.132.229" },
+    })]);
+    expect(uris).toHaveLength(1);
+    const node = decodeVmess(uris[0]);
+    expect(node.add).toBe("104.16.132.229");
+    expect(node.host).toBe("ta-0123456789abcdef0123.example.com");
+    expect(node.sni).toBe("ta-0123456789abcdef0123.example.com");
+    expect(node.port).toBe("443");
+    expect(node.tls).toBe("tls");
+    expect(node.path).toBe("/vmess");
+  });
+
+  it("ignores the preferred address unless the frontend is active", () => {
+    for (const status of ["provisioning", "deleting", "error"]) {
+      const uris = subscriptionUris([vmessTunnel({
+        cloudflare: { hostname: "ta-0123456789abcdef0123.example.com", status, address: "104.16.132.229" },
+      })]);
+      expect(decodeVmess(uris[0])).toMatchObject({ add: "203.0.113.8", port: "10086", tls: "" });
+      expect(decodeVmess(uris[0]).sni).toBeUndefined();
+    }
+  });
+
   it("preserves UUID, display name, and reported path when the frontend is active", () => {
     const uris = subscriptionUris([vmessTunnel({
       name: "edge",
@@ -186,5 +211,73 @@ describe("node subscription", () => {
     expect(await allowedQuery.text()).toBe("");
     const duplicateQuery = await worker.fetch(new Request("https://atlas.example/v1/subscription?token=read-token&token=read-token"), env);
     expect(duplicateQuery.status).toBe(401);
+  });
+
+  async function subscriptionEnv(frontend: { hostname: string; status: string } | null, overrides: Partial<Env> = {}): Promise<Env> {
+    const key = bytesToBase64Url(new Uint8Array(32).fill(7));
+    const row: Record<string, unknown> = {
+      id: "inbound-1", node_id: "node_one", name: "public", kind: "sing-box/inbound",
+      endpoint: "203.0.113.8:10086", protocol: "vmess", status: "healthy",
+      metadata_json: JSON.stringify({ transport: { type: "ws", path: "/vmess" } }),
+      authentication_ciphertext: await encryptJson({ users: [{ uuid: "vmess-uuid" }] }, key, "node_one:inbound-1"),
+      last_seen_at: new Date().toISOString(),
+      node_name: "edge-01",
+      cf_hostname: frontend?.hostname ?? null,
+      cf_status: frontend?.status ?? null,
+      cf_source_endpoint: "203.0.113.8:10086",
+      cf_source_path: "/vmess",
+      cf_last_error: null,
+      cf_updated_at: new Date().toISOString(),
+    };
+    const db = {
+      prepare: () => {
+        const statement = {
+          bind: () => statement,
+          all: async () => ({ results: [row] }),
+        };
+        return statement;
+      },
+    } as unknown as D1Database;
+    return {
+      ADMIN_TOKEN: "admin-token",
+      READ_TOKEN: "read-token",
+      ENROLLMENT_PEPPER: "pepper",
+      CREDENTIALS_KEY: key,
+      DB: db,
+      ...overrides,
+    } as unknown as Env;
+  }
+
+  async function subscriptionVmessNode(env: Env): Promise<Record<string, string>> {
+    const response = await worker.fetch(new Request("https://atlas.example/v1/subscription", {
+      headers: { Authorization: "Bearer read-token" },
+    }), env);
+    expect(response.status).toBe(200);
+    const text = new TextDecoder().decode(Uint8Array.from(atob(await response.text()), (character) => character.charCodeAt(0)));
+    return decodeVmess(text.trim().split("\n")[0]);
+  }
+
+  it("issues the preferred address from the environment for active frontends", async () => {
+    const node = await subscriptionVmessNode(await subscriptionEnv(
+      { hostname: "ta-0123456789abcdef0123.example.com", status: "active" },
+      { CLOUDFLARE_PREFERRED_ADDRESS: "104.16.132.229" },
+    ));
+    expect(node.add).toBe("104.16.132.229");
+    expect(node.host).toBe("ta-0123456789abcdef0123.example.com");
+    expect(node.sni).toBe("ta-0123456789abcdef0123.example.com");
+    expect(node.port).toBe("443");
+  });
+
+  it("falls back to the frontend hostname without the environment variable", async () => {
+    const node = await subscriptionVmessNode(await subscriptionEnv({ hostname: "ta-0123456789abcdef0123.example.com", status: "active" }));
+    expect(node.add).toBe("ta-0123456789abcdef0123.example.com");
+  });
+
+  it("ignores invalid preferred addresses from the environment", async () => {
+    const node = await subscriptionVmessNode(await subscriptionEnv(
+      { hostname: "ta-0123456789abcdef0123.example.com", status: "active" },
+      { CLOUDFLARE_PREFERRED_ADDRESS: "192.168.1.1" },
+    ));
+    expect(node.add).toBe("ta-0123456789abcdef0123.example.com");
   });
 });

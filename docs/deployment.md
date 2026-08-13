@@ -118,6 +118,8 @@ Worker 可以为单个 VMess-WS 隧道开通 Cloudflare 前端：生成 `ta-<20�
 
 在 Cloudflare Dashboard 的 Worker 设置中创建 Secret `CLOUDFLARE_API_TOKEN` 与普通变量 `CLOUDFLARE_ZONE_NAME`（`keep_vars` 已启用，自动部署会保留变量）。`0004_tunnel_cloudflare_frontends.sql` 是纯增量 migration，随 `deploy:production` 自动应用，无需手工步骤。
 
+可选：节点优选（自选 Cloudflare 优选 IP）。设置普通变量 `CLOUDFLARE_PREFERRED_ADDRESS`（如 `104.16.132.229` 或优选域名）后，所有 `active` 前端的 VMess-WS 订阅只把 `add` 替换为该地址，`sni`/`host` 仍保持生成的 `ta-` 主机名，保证 TLS 证书与 WebSocket 路由不受影响。接受主机名或公网 IPv4/IPv6，拒绝私网与通配符；留空、未设置或非法值时回退到前端主机名。无需重启或重新同步，变量变更对下一次订阅请求生效。
+
 ### 6.3 规则配额
 
 Free 计划每个 zone 各 10 条 Config Rules 和 10 条 Origin Rules，每个已启用隧道各消耗 1 条。配额错误会以 `error` 状态保留在隧道记录中，需要先停用其他隧道或升级计划后由管理员重试。

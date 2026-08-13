@@ -4,7 +4,7 @@ import {
   type CloudflareFrontendRow, ConfigError, ProviderError,
 } from "./cloudflare";
 import { decryptJson, encryptJson, randomId, randomToken, sha256Hex } from "./crypto";
-import { externallyReachableEndpoint, observedAddress } from "./endpoints";
+import { externallyReachableEndpoint, observedAddress, validFrontendAddress } from "./endpoints";
 import { bearer, HttpError, json, problem, readJson } from "./http";
 import { encodeSubscription, type SubscriptionTunnel } from "./subscription";
 import type { CloudflareFrontendState, EnrollmentBody, Env, ReportBody } from "./types";
@@ -53,6 +53,16 @@ function cloudflareStatus(error: unknown): never {
   if (error instanceof ProviderError) throw new HttpError(502, `Cloudflare: ${error.message}`);
   console.error("cloudflare provisioning failed", error);
   throw new HttpError(502, "Cloudflare provisioning failed");
+}
+
+function preferredFrontendAddress(env: Env): string | null {
+  const value = env.CLOUDFLARE_PREFERRED_ADDRESS?.trim();
+  if (!value) return null;
+  if (!validFrontendAddress(value)) {
+    console.error("ignoring invalid CLOUDFLARE_PREFERRED_ADDRESS", value);
+    return null;
+  }
+  return value;
 }
 
 async function claimFrontend(
@@ -497,6 +507,7 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
     ? env.DB.prepare(tunnelQuery(true, true)).bind(cutoff, nodeId)
     : env.DB.prepare(tunnelQuery(false, true)).bind(cutoff);
   const result = await statement.all<Record<string, unknown>>();
+  const preferredAddress = preferredFrontendAddress(env);
   const tunnels = await Promise.all(result.results.map(async (row): Promise<SubscriptionTunnel> => {
     const tunnel = await tunnelFromRow(row, env);
     const frontend = tunnel.cloudflare as CloudflareFrontendState | null;
@@ -508,7 +519,9 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
       name: String(tunnel.name),
       protocol: String(tunnel.protocol),
       status: tunnel.status,
-      cloudflare: frontend ? { hostname: frontend.hostname, status: frontend.status } : null,
+      cloudflare: frontend
+        ? { hostname: frontend.hostname, status: frontend.status, address: preferredAddress }
+        : null,
     };
   }));
   return new Response(encodeSubscription(tunnels), {

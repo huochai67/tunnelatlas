@@ -109,3 +109,13 @@ export function validWebSocketPath(value: string): boolean {
   return value.length > 0 && value.length <= 2048
     && value.startsWith("/") && !/[\x00-\x20"\\#?]/.test(value);
 }
+
+export function validFrontendAddress(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (parseOriginEndpoint(`${trimmed}:443`) !== null) return true;
+  // A dotted quad that failed the origin parser is private or malformed; the
+  // hostname grammar would otherwise accept it as label characters.
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed)) return false;
+  return HOSTNAME.test(trimmed);
+}

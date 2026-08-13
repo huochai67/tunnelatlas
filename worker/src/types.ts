@@ -8,6 +8,7 @@ export interface Env {
   AGENT_OFFLINE_SECONDS?: string;
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_ZONE_NAME?: string;
+  CLOUDFLARE_PREFERRED_ADDRESS?: string;
 }
 
 export interface CloudflareFrontendState {
