@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -14,21 +14,22 @@ use rand::{RngCore, rngs::OsRng};
 use rcgen::generate_simple_self_signed;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, ProtocolKind, ProtocolSpec, write_private_atomic};
+use crate::{config::write_private_atomic, desired::DesiredTunnel};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SecretStore {
     #[serde(default)]
     pub protocols: BTreeMap<String, ProtocolSecret>,
+    #[serde(default)]
+    pub generations: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
+    rename_all_fields = "camelCase"
 )]
 pub enum ProtocolSecret {
     Shadowsocks {
@@ -73,65 +74,67 @@ impl SecretStore {
         write_private_atomic(path, &serde_json::to_vec_pretty(self)?)
     }
 
-    pub fn reconcile(&mut self, config: &Config) -> Result<bool> {
+    pub fn reconcile_desired(
+        &mut self,
+        tunnels: &[DesiredTunnel],
+        certs_dir: &Path,
+    ) -> Result<bool> {
         let before = self.clone();
+        let active_ids: BTreeSet<&str> = tunnels.iter().map(|t| t.id()).collect();
         self.protocols
-            .retain(|tag, _| config.protocols.iter().any(|protocol| &protocol.tag == tag));
-        for protocol in &config.protocols {
-            if self
-                .protocols
-                .get(&protocol.tag)
-                .is_none_or(|secret| !secret.matches(&protocol.kind))
-            {
+            .retain(|id, _| active_ids.contains(id.as_str()));
+        self.generations
+            .retain(|id, _| active_ids.contains(id.as_str()));
+
+        for tunnel in tunnels {
+            let needs_regen = match (
+                self.protocols.get(tunnel.id()),
+                self.generations.get(tunnel.id()),
+            ) {
+                (Some(secret), Some(&generation)) => {
+                    !secret.matches_desired(tunnel) || generation != tunnel.credential_generation()
+                }
+                _ => true,
+            };
+            if needs_regen {
                 self.protocols.insert(
-                    protocol.tag.clone(),
-                    ProtocolSecret::generate(&protocol.kind),
+                    tunnel.id().to_owned(),
+                    ProtocolSecret::generate_for_desired(tunnel),
                 );
+                self.generations
+                    .insert(tunnel.id().to_owned(), tunnel.credential_generation());
             }
-            ensure_certificate(config, protocol)?;
+            ensure_desired_certificate(certs_dir, tunnel)?;
         }
-        cleanup_certificates(config)?;
+        cleanup_desired_certificates(certs_dir, tunnels)?;
         Ok(*self != before)
     }
 
-    pub fn rotate(&mut self, protocol: &ProtocolSpec) {
-        self.protocols.insert(
-            protocol.tag.clone(),
-            ProtocolSecret::generate(&protocol.kind),
-        );
-    }
-
-    pub fn get(&self, protocol: &ProtocolSpec) -> Result<&ProtocolSecret> {
+    pub fn get_desired(&self, tunnel: &DesiredTunnel) -> Result<&ProtocolSecret> {
         self.protocols
-            .get(&protocol.tag)
-            .filter(|secret| secret.matches(&protocol.kind))
-            .with_context(|| format!("missing secrets for protocol {}", protocol.tag))
-    }
-}
-
-impl PartialEq for SecretStore {
-    fn eq(&self, other: &Self) -> bool {
-        self.protocols == other.protocols
+            .get(tunnel.id())
+            .filter(|secret| secret.matches_desired(tunnel))
+            .with_context(|| format!("missing secrets for desired tunnel {}", tunnel.id()))
     }
 }
 
 impl ProtocolSecret {
-    fn generate(kind: &ProtocolKind) -> Self {
-        match kind {
-            ProtocolKind::Shadowsocks { method } => {
+    pub fn generate_for_desired(tunnel: &DesiredTunnel) -> Self {
+        match tunnel {
+            DesiredTunnel::Shadowsocks { method, .. } => {
                 let bytes = if method.contains("aes-128") { 16 } else { 32 };
                 Self::Shadowsocks {
                     password: random_standard_base64(bytes),
                 }
             }
-            ProtocolKind::Hysteria2 { .. } => Self::Hysteria2 {
+            DesiredTunnel::Hysteria2 { .. } => Self::Hysteria2 {
                 password: random_base64(24),
             },
-            ProtocolKind::Tuic { .. } => Self::Tuic {
+            DesiredTunnel::Tuic { .. } => Self::Tuic {
                 uuid: uuid::Uuid::new_v4().to_string(),
                 password: random_base64(24),
             },
-            ProtocolKind::VlessReality { .. } => {
+            DesiredTunnel::VlessReality { .. } => {
                 let (private_key, public_key) = reality_keypair();
                 Self::VlessReality {
                     uuid: uuid::Uuid::new_v4().to_string(),
@@ -140,7 +143,7 @@ impl ProtocolSecret {
                     short_id: random_hex(8),
                 }
             }
-            ProtocolKind::AnytlsReality { .. } => {
+            DesiredTunnel::AnytlsReality { .. } => {
                 let (private_key, public_key) = reality_keypair();
                 Self::AnytlsReality {
                     name: "tunnelatlas".to_owned(),
@@ -150,71 +153,50 @@ impl ProtocolSecret {
                     short_id: random_hex(8),
                 }
             }
-            ProtocolKind::VmessWs { .. } => Self::VmessWs {
+            DesiredTunnel::VmessWs { .. } => Self::VmessWs {
                 uuid: uuid::Uuid::new_v4().to_string(),
             },
         }
     }
 
-    fn matches(&self, kind: &ProtocolKind) -> bool {
+    pub fn matches_desired(&self, tunnel: &DesiredTunnel) -> bool {
         matches!(
-            (self, kind),
-            (Self::Shadowsocks { .. }, ProtocolKind::Shadowsocks { .. })
-                | (Self::Hysteria2 { .. }, ProtocolKind::Hysteria2 { .. })
-                | (Self::Tuic { .. }, ProtocolKind::Tuic { .. })
-                | (Self::VlessReality { .. }, ProtocolKind::VlessReality { .. })
+            (self, tunnel),
+            (Self::Shadowsocks { .. }, DesiredTunnel::Shadowsocks { .. })
+                | (Self::Hysteria2 { .. }, DesiredTunnel::Hysteria2 { .. })
+                | (Self::Tuic { .. }, DesiredTunnel::Tuic { .. })
+                | (
+                    Self::VlessReality { .. },
+                    DesiredTunnel::VlessReality { .. }
+                )
                 | (
                     Self::AnytlsReality { .. },
-                    ProtocolKind::AnytlsReality { .. }
+                    DesiredTunnel::AnytlsReality { .. }
                 )
-                | (Self::VmessWs { .. }, ProtocolKind::VmessWs { .. })
+                | (Self::VmessWs { .. }, DesiredTunnel::VmessWs { .. })
         )
     }
 }
 
-pub fn certificate_paths(config: &Config, protocol: &ProtocolSpec) -> Result<(PathBuf, PathBuf)> {
-    match &protocol.kind {
-        ProtocolKind::Hysteria2 {
-            certificate_path: Some(cert),
-            key_path: Some(key),
-            ..
-        }
-        | ProtocolKind::Tuic {
-            certificate_path: Some(cert),
-            key_path: Some(key),
-            ..
-        } => Ok((PathBuf::from(cert), PathBuf::from(key))),
-        ProtocolKind::Hysteria2 { .. } | ProtocolKind::Tuic { .. } => {
-            let directory = Path::new(&config.sing_box.certificates_directory);
-            Ok((
-                directory.join(format!("{}.pem", protocol.tag)),
-                directory.join(format!("{}.key", protocol.tag)),
-            ))
-        }
-        _ => bail!("protocol {} does not use a certificate", protocol.tag),
-    }
+pub fn desired_certificate_paths(
+    certificates_dir: &Path,
+    tunnel: &DesiredTunnel,
+) -> (PathBuf, PathBuf) {
+    let base = format!("{}-{}", tunnel.id(), tunnel.credential_generation());
+    (
+        certificates_dir.join(format!("{base}.crt")),
+        certificates_dir.join(format!("{base}.key")),
+    )
 }
 
-fn ensure_certificate(config: &Config, protocol: &ProtocolSpec) -> Result<()> {
-    let server_name = match &protocol.kind {
-        ProtocolKind::Hysteria2 {
-            server_name,
-            certificate_path,
-            ..
-        }
-        | ProtocolKind::Tuic {
-            server_name,
-            certificate_path,
-            ..
-        } => {
-            if certificate_path.is_some() {
-                return Ok(());
-            }
+pub fn ensure_desired_certificate(certificates_dir: &Path, tunnel: &DesiredTunnel) -> Result<()> {
+    let server_name = match tunnel {
+        DesiredTunnel::Hysteria2 { server_name, .. } | DesiredTunnel::Tuic { server_name, .. } => {
             server_name
         }
         _ => return Ok(()),
     };
-    let (cert_path, key_path) = certificate_paths(config, protocol)?;
+    let (cert_path, key_path) = desired_certificate_paths(certificates_dir, tunnel);
     if cert_path.exists() && key_path.exists() {
         return Ok(());
     }
@@ -227,18 +209,20 @@ fn ensure_certificate(config: &Config, protocol: &ProtocolSpec) -> Result<()> {
     Ok(())
 }
 
-fn cleanup_certificates(config: &Config) -> Result<()> {
-    let directory = Path::new(&config.sing_box.certificates_directory);
-    if !directory.exists() {
+pub fn cleanup_desired_certificates(
+    certificates_dir: &Path,
+    tunnels: &[DesiredTunnel],
+) -> Result<()> {
+    if !certificates_dir.exists() {
         return Ok(());
     }
     let mut allowed = BTreeSet::new();
-    for protocol in &config.protocols {
+    for tunnel in tunnels {
         if matches!(
-            &protocol.kind,
-            ProtocolKind::Hysteria2 { .. } | ProtocolKind::Tuic { .. }
+            tunnel,
+            DesiredTunnel::Hysteria2 { .. } | DesiredTunnel::Tuic { .. }
         ) {
-            let (certificate, key) = certificate_paths(config, protocol)?;
+            let (certificate, key) = desired_certificate_paths(certificates_dir, tunnel);
             if let Some(name) = certificate.file_name() {
                 allowed.insert(name.to_owned());
             }
@@ -247,7 +231,7 @@ fn cleanup_certificates(config: &Config) -> Result<()> {
             }
         }
     }
-    for entry in fs::read_dir(directory)? {
+    for entry in fs::read_dir(certificates_dir)? {
         let entry = entry?;
         if entry.file_type()?.is_file() && !allowed.contains(&entry.file_name()) {
             fs::remove_file(entry.path())?;
@@ -287,46 +271,52 @@ fn reality_keypair() -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SingBoxSettings;
-
-    fn config(directory: &Path) -> Config {
-        Config {
-            server_url: "https://example.com".into(),
-            enrollment_token: None,
-            report_interval_seconds: 60,
-            labels: BTreeMap::new(),
-            public_host: None,
-            runtime_path: directory.join("runtime.json").to_string_lossy().into(),
-            sing_box: SingBoxSettings {
-                binary_path: "/bin/true".into(),
-                managed_config_path: directory.join("sing-box.json").to_string_lossy().into(),
-                secrets_path: directory.join("secrets.json").to_string_lossy().into(),
-                certificates_directory: directory.join("certs").to_string_lossy().into(),
-                working_directory: None,
-                restart_delay_seconds: 1,
-                shutdown_timeout_seconds: 1,
-            },
-            protocols: vec![ProtocolSpec {
-                tag: "ss".into(),
-                listen: "::".into(),
-                port: 8388,
-                kind: ProtocolKind::Shadowsocks {
-                    method: "2022-blake3-aes-128-gcm".into(),
-                },
-            }],
-        }
-    }
 
     #[test]
-    fn secrets_are_stable_until_rotated() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = config(directory.path());
+    fn secrets_are_stable_until_credential_generation_advances() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let certs_dir = temp_dir.path().join("certs");
+        let tunnel = DesiredTunnel::Shadowsocks {
+            id: "tun_1".into(),
+            name: "ss-1".into(),
+            listen: "::".into(),
+            port: 8388,
+            public_host: None,
+            credential_generation: 1,
+            method: "2022-blake3-aes-128-gcm".into(),
+        };
+
         let mut secrets = SecretStore::default();
-        assert!(secrets.reconcile(&config).unwrap());
+        assert!(
+            secrets
+                .reconcile_desired(std::slice::from_ref(&tunnel), &certs_dir)
+                .unwrap()
+        );
         let first = secrets.clone();
-        assert!(!secrets.reconcile(&config).unwrap());
+
+        // Same generation -> no change
+        assert!(
+            !secrets
+                .reconcile_desired(std::slice::from_ref(&tunnel), &certs_dir)
+                .unwrap()
+        );
         assert_eq!(secrets, first);
-        secrets.rotate(&config.protocols[0]);
+
+        // Advanced generation -> regenerates
+        let rotated_tunnel = DesiredTunnel::Shadowsocks {
+            id: "tun_1".into(),
+            name: "ss-1".into(),
+            listen: "::".into(),
+            port: 8388,
+            public_host: None,
+            credential_generation: 2,
+            method: "2022-blake3-aes-128-gcm".into(),
+        };
+        assert!(
+            secrets
+                .reconcile_desired(&[rotated_tunnel], &certs_dir)
+                .unwrap()
+        );
         assert_ne!(secrets, first);
     }
 }

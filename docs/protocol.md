@@ -8,26 +8,53 @@
 |---|---|---|
 | POST | `/v1/admin/nodes` | 创建待接入节点并生成首次注册码 |
 | POST | `/v1/admin/nodes/{nodeId}/enrollment-tokens` | 为待接入节点废止旧码并生成新注册码 |
-| POST | `/v1/admin/nodes/{nodeId}/enrollment:reset` | 撤销旧 Agent 身份、清空隧道并生成新注册码 |
+| POST | `/v1/admin/nodes/{nodeId}/enrollment:reset` | 撤销旧 Agent 身份、清空已观测隧道并生成新注册码 |
+| DELETE | `/v1/admin/nodes/{nodeId}` | 永久删除节点、注册码、期望隧道与观测隧道 |
+| GET | `/v1/admin/overview` | 获取控制台所需的节点和隧道概况（包含期望与观测状态） |
+| POST | `/v1/admin/nodes/{nodeId}/tunnels` | 为节点创建期望隧道配置（递增 `config_version`） |
+| PUT | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}` | 完整更新期望隧道字段（必要时递增 `credential_generation` 和 `config_version`） |
+| PATCH | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}` | 修改隧道的订阅可见性（`subscriptionEnabled`，不递增 `config_version`） |
+| POST | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/credentials:rotate` | 显式触发该隧道凭据轮换（递增 `credential_generation` 和 `config_version`） |
+| DELETE | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}` | 删除期望隧道与观测状态，清理 Cloudflare 前端并递增 `config_version` |
 | PUT | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/cloudflare` | 启用/重试/重新同步 VMess-WS 隧道的 Cloudflare 前端 |
 | DELETE | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/cloudflare` | 停用前端：删除代理 DNS、Flexible SSL 与 Origin 端口规则 |
-| DELETE | `/v1/admin/nodes/{nodeId}` | 永久删除节点、注册码和隧道 |
-| GET | `/v1/admin/overview` | 获取控制台所需的节点和隧道概况 |
 
-`POST /v1/admin/nodes` 只接收显示名称，节点 ID 由 Worker 生成；显示名称允许重复。创建响应包含 `node`、`token` 和 `expiresAt`。节点在 Agent 认领前为 `pending`，已接入节点只能通过显式重置重新注册。
+### 隧道配置 CRUD 规则
+
+1. `POST /v1/admin/nodes/{nodeId}/tunnels`：
+   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`（无端口/无通配符/全局可路由公网地址）、以及对应协议的选项。
+   - 每个节点最多允许 64 条期望隧道，超过限制返回 409 `Tunnel limit reached`。
+   - 节点内 `name` 或 `port` 冲突返回 409（`Tunnel name already exists` / `Tunnel port already in use`）。
+   - 插入成功原子递增 `nodes.config_version`，生成 `randomId("tunnel")` 并返回 `{ tunnel }`（状态 201）。
+
+2. `PUT /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
+   - 完整替换可编辑字段，保持 `id`、`node_id` 与 `subscription_enabled`。
+   - 当协议类型、Shadowsocks `method` 或 Hysteria2/TUIC `serverName` 改变时递增 `credential_generation`；普通名称、端口、监听、公网地址、路径、Host、拥塞算法或 Reality 目标修改保持原凭据代数。
+   - 仅当期望字段发生实际改变时原子递增 `nodes.config_version`；无变更时不递增。
+
+3. `PATCH /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
+   - 仅接收 `{ "subscriptionEnabled": boolean }`，更新 `tunnel_configs.subscription_enabled`。由于只影响订阅输出而不影响 sing-box 渲染，不递增 `config_version`。
+
+4. `POST /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/credentials:rotate`：
+   - 递增对应隧道的 `credential_generation` 与节点的 `config_version`。旧观测认证信息在 Agent 汇报新配置前保持有效。
+
+5. `DELETE /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
+   - 必须先校验 `(node_id, id)` 存在于 `tunnel_configs` 中，不存在直接返回 404 `Tunnel configuration not found`，不执行任何外部清理副作用（遗留观测记录不是期望隧道）。
+   - 若存在跟踪的 Cloudflare 前端，先执行远程解绑清理；清理失败中止删除。
+   - 校验通过后原子删除期望记录、匹配的已观测记录和前端记录，并递增 `config_version`。
 
 ## Agent 注册
 
-Agent 在本地生成 Ed25519 密钥，通过 HTTPS 提交公钥、平台和 labels：
+Agent 本地生成 Ed25519 密钥，通过 HTTPS 提交公钥、平台和 labels：
 
 ```http
 POST /v1/enrollments:exchange
 Authorization: Enrollment <one-time-token>
 ```
 
-注册码直接绑定节点，以加 pepper 的 SHA-256 摘要存储。Worker 通过条件更新保证竞争请求中只有一个能够认领节点，响应继续使用 `{ "agentId": "node_..." }`，本地 identity 和签名协议保持 `agentId` 命名。
+注册码直接绑定节点，以加 pepper 的 SHA-256 摘要存储。Worker 通过条件更新保证竞争请求中只有一个能够认领节点，响应为 `{ "agentId": "node_..." }`。
 
-## Agent 报告
+## Agent 报告与期望状态同步
 
 ```http
 POST /v1/agent/report
@@ -44,9 +71,46 @@ X-Signature: <base64url-ed25519-signature>
 METHOD\nPATH\nTIMESTAMP\nSEQUENCE\nBODY_SHA256
 ```
 
-服务端要求时间偏差不超过 5 分钟，并要求 sequence 严格大于该 Agent 已接受的值。Agent 在发送前原子持久化下一个 sequence；请求失败可以跳号，但不能复用。重置接入会立即清除服务端公钥和 sequence，旧身份随即失效。
+### 请求体与版本语义
 
-报告是 Agent 当前已应用协议声明的完整快照，最多包含 64 条 inbound，最大 256 KiB。`authentication` 仅允许约定的认证字段；认证对象使用 AES-256-GCM 加密后写入 D1。响应包含 Worker 观察到的 `observedAddress`，Agent 将其缓存供本地链接展示使用。
+请求体 JSON 包含：
+- `agentVersion`: string
+- `labels`: map
+- `tunnels`: 观测到的 inbound 快照
+- `appliedConfigVersion`: 三态字段：
+  - 省略（未提供）：旧 Agent 兼容模式，执行遗留全量观测 upsert/delete。
+  - 显式 `null`：新 Agent 初始启动或未应用 Worker 期望配置，推进 sequence/心跳/元数据并记录 `configApplyError`，但不修改观测隧道、Cloudflare 前端或 `nodes.applied_config_version`。
+  - 非负安全整数（`<= nodes.config_version`）：新 Agent 已应用的期望版本号。只接受存在于 `tunnel_configs` 中的隧道并用 `EXISTS tunnel_configs` 条件保障 upsert，同时清除未被接受的遗留/孤儿观测行。
+- `configApplyError`: 可选非机密错误码：`invalid_desired_config`、`sing_box_validation_failed`、`sing_box_start_failed`、`local_apply_failed`。
+
+### 响应体
+
+响应始终携带权威期望配置快照：
+
+```json
+{
+  "acceptedSequence": 42,
+  "serverTime": "2026-09-06T12:00:00Z",
+  "observedAddress": "203.0.113.8",
+  "desiredConfig": {
+    "version": 1,
+    "tunnels": [
+      {
+        "id": "tunnel_xxx",
+        "name": "ss-in",
+        "type": "shadowsocks",
+        "listen": "::",
+        "port": 8388,
+        "publicHost": null,
+        "credentialGeneration": 1,
+        "method": "2022-blake3-aes-128-gcm"
+      }
+    ]
+  }
+}
+```
+
+响应先读取节点版本号，再读取期望隧道列表；并发变更将使返回的隧道行更新于版本号，迫使 Agent 后续重新收敛。
 
 ## 发现 API
 
@@ -55,7 +119,7 @@ GET /v1/tunnels?nodeId=node_xxx
 Authorization: Bearer <READ_TOKEN>
 ```
 
-返回仍在线节点的 inbound，最多 1000 条。响应使用 `nodeId` 和 `nodeName` 标识归属；`nodeId` 可选，省略时返回全部节点。每项的 `authentication` 包含解密后的认证参数，因此 `READ_TOKEN` 本身属于敏感凭据；`ADMIN_TOKEN` 也具有读取权限。
+返回仍在线节点的 inbound，最多 1000 条。对于已确认数字版本的节点，仅展示关联到 `tunnel_configs` 的隧道；对于未确认数字版本的遗留/引导节点，继续展示已保存的观测行。每项的 `authentication` 包含解密后的认证参数。
 
 ## 节点订阅 API
 
@@ -64,24 +128,10 @@ GET /v1/subscription?nodeId=node_xxx
 Authorization: Bearer <READ_TOKEN>
 ```
 
-不支持自定义请求头的订阅客户端可以将令牌放入 URL：
+支持 `?token=<READ_TOKEN>` 查询参数。托管节点通过 `tunnel_configs.subscription_enabled` 控制下发；遗留节点通过 `tunnels.subscription_enabled` 控制。仅输出在线且状态为 `healthy` 的隧道。
 
-```text
-https://atlas.example/v1/subscription?nodeId=node_xxx&token=<READ_TOKEN>
-```
+## 发布与升级顺序
 
-返回 `text/plain` 格式的标准 Base64；解码后每行一个节点 URI。接口只接受 `READ_TOKEN`，并仅输出在线节点上状态为 `healthy`、端点和认证信息完整的受支持 inbound。当前支持 Shadowsocks、VLESS Reality、VMess WebSocket、Hysteria 2、TUIC 和 AnyTLS Reality。订阅显示名称使用 `节点名称/协议名称/用户`。URL token 可能进入浏览器历史、代理或访问日志；支持请求头时仍应优先使用 Bearer 认证。
-
-### Cloudflare 前端覆盖
-
-对已启用 Cloudflare 前端的 VMess-WS 隧道，仅当前端状态为 `active` 时订阅输出才覆盖为：`sni`/`host` = 生成的 `ta-` 主机名、`port=443`、`tls=tls`，WebSocket 路径、UUID 和显示名称保持不变；`add` 默认为该主机名，若配置了普通变量 `CLOUDFLARE_PREFERRED_ADDRESS`（优选 IP/域名，公网 IPv4/IPv6 或主机名，拒绝私网与通配符），则替换为该地址，便于节点优选；变量非法或未设置时回退主机名。`provisioning`、`error`、`deleting` 或未启用状态一律回退到直连端点，因此端点变更后的重同步窗口内订阅不会指向过期地址。非 VMess 协议不受影响。
-
-两条管理路由只接受 `ADMIN_TOKEN`。`PUT` 是幂等操作（创建、重试、重新同步共用），`DELETE` 先删除远程资源再移除 D1 跟踪；进行中的操作通过 5 分钟租约互斥，并发请求返回 409。节点重置或删除前会同步停用全部已跟踪前端，远程清理失败时节点操作中止并保留跟踪记录。
-
-## 管理控制台
-
-Worker Static Assets 在 `/` 提供管理控制台。控制台令牌仅存入当前标签页的 `sessionStorage`；管理令牌可创建、重置和删除节点，只读令牌只能查看在线隧道。创建或重置节点后，控制台会生成包含当前 Worker 地址和注册码的一键部署命令。
-
-## 破坏性模型变更
-
-`0003_merge_sites_and_agents_into_nodes.sql` 会删除旧站点、Agent、注册码和隧道表并创建单一节点模型，不迁移旧数据。必须先发布兼容的 `tunnelatlasd 0.0.9`，再应用该 migration 和部署 Worker。
+1. 先部署包含 `0007_worker_managed_tunnel_configs.sql` 的加法 Worker。
+2. 管理员在控制台为各节点手动创建期望隧道配置（包括公网地址）。
+3. 升级 Agent：新 Agent 启动后请求期望配置，完成收敛后本地停用并清除旧配置文件中的 `protocols` 与 `publicHost`，并发送首个数字版本报告触发服务端遗留清理。

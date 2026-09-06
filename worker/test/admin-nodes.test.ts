@@ -251,10 +251,10 @@ describe("admin node management", () => {
       tunnel: { id: "inbound-1", nodeId: "node_one", name: "public", subscriptionEnabled: true },
     });
 
-    const patchCalls = calls.filter((call) => call.sql.includes("UPDATE tunnels SET subscription_enabled"));
+    const patchCalls = calls.filter((call) => call.sql.includes("UPDATE tunnel_configs SET subscription_enabled"));
     expect(patchCalls).toHaveLength(2);
-    expect(patchCalls[0].values).toEqual([0, "node_one", "inbound-1"]);
-    expect(patchCalls[1].values).toEqual([1, "node_one", "inbound-1"]);
+    expect(patchCalls[0].values).toEqual([0, expect.any(String), "node_one", "inbound-1"]);
+    expect(patchCalls[1].values).toEqual([1, expect.any(String), "node_one", "inbound-1"]);
   });
 
   it("rejects non-boolean subscriptionEnabled payloads", async () => {
@@ -281,8 +281,8 @@ describe("admin node management", () => {
     const { env, calls } = testEnv([null]);
     const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_one/tunnels/missing", "PATCH", { subscriptionEnabled: false }), env);
     expect(response.status).toBe(404);
-    expect((await response.json() as Record<string, any>).title).toBe("Tunnel not found");
-    expect(calls.some((call) => call.sql.includes("UPDATE tunnels SET subscription_enabled"))).toBe(true);
+    expect((await response.json() as Record<string, any>).title).toBe("Tunnel configuration not found");
+    expect(calls.some((call) => call.sql.includes("UPDATE tunnel_configs SET subscription_enabled"))).toBe(true);
   });
 
   it("requires ADMIN_TOKEN before updating tunnel subscription visibility", async () => {

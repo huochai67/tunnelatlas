@@ -25,10 +25,18 @@ export interface EnrollmentBody {
   labels?: Record<string, string>;
 }
 
+export type ConfigApplyErrorCode =
+  | "invalid_desired_config"
+  | "sing_box_validation_failed"
+  | "sing_box_start_failed"
+  | "local_apply_failed";
+
 export interface ReportBody {
   agentVersion: string;
   labels?: Record<string, string>;
   tunnels: TunnelBody[];
+  appliedConfigVersion?: number | null;
+  configApplyError?: ConfigApplyErrorCode | null;
 }
 
 export interface TunnelBody {
@@ -46,4 +54,119 @@ export interface AgentRow {
   id: string;
   public_key: string;
   last_sequence: number;
+}
+
+export type DesiredTunnelType =
+  | "shadowsocks"
+  | "hysteria2"
+  | "tuic"
+  | "vless-reality"
+  | "anytls-reality"
+  | "vmess-ws";
+
+export interface DesiredTunnelBase {
+  id: string;
+  name: string;
+  type: DesiredTunnelType;
+  listen: string;
+  port: number;
+  publicHost: string | null;
+  credentialGeneration: number;
+}
+
+export interface ShadowsocksDesiredTunnel extends DesiredTunnelBase {
+  type: "shadowsocks";
+  method: string;
+}
+
+export interface Hysteria2DesiredTunnel extends DesiredTunnelBase {
+  type: "hysteria2";
+  serverName: string;
+}
+
+export interface TuicDesiredTunnel extends DesiredTunnelBase {
+  type: "tuic";
+  serverName: string;
+  congestionControl: string;
+}
+
+export interface VlessRealityDesiredTunnel extends DesiredTunnelBase {
+  type: "vless-reality";
+  serverName: string;
+}
+
+export interface AnytlsRealityDesiredTunnel extends DesiredTunnelBase {
+  type: "anytls-reality";
+  serverName: string;
+}
+
+export interface VmessWsDesiredTunnel extends DesiredTunnelBase {
+  type: "vmess-ws";
+  path: string;
+  host: string | null;
+}
+
+export type DesiredTunnel =
+  | ShadowsocksDesiredTunnel
+  | Hysteria2DesiredTunnel
+  | TuicDesiredTunnel
+  | VlessRealityDesiredTunnel
+  | AnytlsRealityDesiredTunnel
+  | VmessWsDesiredTunnel;
+
+export interface DesiredConfig {
+  version: number;
+  tunnels: DesiredTunnel[];
+}
+
+export interface ReportResponse {
+  acceptedSequence: number;
+  serverTime: string;
+  observedAddress: string | null;
+  desiredConfig: DesiredConfig;
+}
+
+export interface CreateTunnelConfigInput {
+  name: string;
+  type: DesiredTunnelType;
+  listen?: string;
+  port: number;
+  publicHost?: string | null;
+  method?: string;
+  serverName?: string;
+  congestionControl?: string;
+  path?: string;
+  host?: string | null;
+}
+
+export interface UpdateTunnelConfigInput {
+  name: string;
+  type: DesiredTunnelType;
+  listen?: string;
+  port: number;
+  publicHost?: string | null;
+  method?: string;
+  serverName?: string;
+  congestionControl?: string;
+  path?: string;
+  host?: string | null;
+}
+
+export interface PatchTunnelConfigInput {
+  subscriptionEnabled: boolean;
+}
+
+export interface TunnelConfigRow {
+  node_id: string;
+  id: string;
+  name: string;
+  type: DesiredTunnelType;
+  listen: string;
+  port: number;
+  public_host: string | null;
+  options_json: string;
+  credential_generation: number;
+  subscription_enabled: number;
+  created_at: string;
+  updated_at: string;
 }

@@ -3,15 +3,19 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::write_private_atomic;
+use crate::{config::write_private_atomic, desired::DesiredConfig, protocol::ConfigApplyErrorCode};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_address: Option<String>,
     #[serde(default)]
     pub process_healthy: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_desired_config: Option<DesiredConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_apply_error: Option<ConfigApplyErrorCode>,
 }
 
 impl RuntimeState {

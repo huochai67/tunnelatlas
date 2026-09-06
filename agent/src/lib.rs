@@ -1,7 +1,8 @@
 pub mod client;
 pub mod config;
+pub mod convergence;
+pub mod desired;
 pub mod identity;
-pub mod links;
 pub mod manager;
 pub mod protocol;
 pub mod render;

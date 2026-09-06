@@ -3,7 +3,27 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::sing_box::ObservedTunnel;
+use crate::{desired::DesiredConfig, sing_box::ObservedTunnel};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigApplyErrorCode {
+    InvalidDesiredConfig,
+    SingBoxValidationFailed,
+    SingBoxStartFailed,
+    LocalApplyFailed,
+}
+
+impl ConfigApplyErrorCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InvalidDesiredConfig => "invalid_desired_config",
+            Self::SingBoxValidationFailed => "sing_box_validation_failed",
+            Self::SingBoxStartFailed => "sing_box_start_failed",
+            Self::LocalApplyFailed => "local_apply_failed",
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +53,9 @@ pub struct ReportRequest<'a> {
     pub agent_version: &'static str,
     pub labels: &'a BTreeMap<String, String>,
     pub tunnels: Vec<TunnelReport<'a>>,
+    pub applied_config_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_apply_error: Option<ConfigApplyErrorCode>,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,6 +93,7 @@ pub struct ReportResponse {
     pub server_time: String,
     #[serde(default)]
     pub observed_address: Option<String>,
+    pub desired_config: DesiredConfig,
 }
 
 #[cfg(test)]

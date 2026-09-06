@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { externallyReachableEndpoint, observedAddress, parseOriginEndpoint, validFrontendAddress, validWebSocketPath } from "../src/endpoints";
+import { externallyReachableEndpoint, observedAddress, parseOriginEndpoint, validFrontendAddress, validIpAddress, validWebSocketPath } from "../src/endpoints";
 
 describe("externally reachable endpoints", () => {
   it("replaces wildcard listeners with the reporting agent public IPv4 address", () => {
@@ -103,5 +103,26 @@ describe("frontend address validation", () => {
     expect(validFrontendAddress("104.16.132.229:443")).toBe(false);
     expect(validFrontendAddress("not a host")).toBe(false);
     expect(validFrontendAddress("")).toBe(false);
+  });
+});
+
+describe("ip address validation", () => {
+  it("accepts valid IPv4 and IPv6 listen addresses", () => {
+    expect(validIpAddress("::")).toBe(true);
+    expect(validIpAddress("0.0.0.0")).toBe(true);
+    expect(validIpAddress("127.0.0.1")).toBe(true);
+    expect(validIpAddress("203.0.113.8")).toBe(true);
+    expect(validIpAddress("2001:db8::1")).toBe(true);
+    expect(validIpAddress("[::]")).toBe(true);
+    expect(validIpAddress("[2001:db8::1]")).toBe(true);
+  });
+
+  it("rejects non-ip strings and malformed addresses", () => {
+    expect(validIpAddress("")).toBe(false);
+    expect(validIpAddress("not-an-ip")).toBe(false);
+    expect(validIpAddress("192.168.1.300")).toBe(false);
+    expect(validIpAddress("256.0.0.1")).toBe(false);
+    expect(validIpAddress("1.2.3")).toBe(false);
+    expect(validIpAddress("::g")).toBe(false);
   });
 });

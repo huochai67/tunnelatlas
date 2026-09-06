@@ -11,8 +11,8 @@ use crate::{
     config::Config,
     identity::Identity,
     protocol::{
-        EnrollmentRequest, EnrollmentResponse, Platform, ReportRequest, ReportResponse,
-        TunnelReport,
+        ConfigApplyErrorCode, EnrollmentRequest, EnrollmentResponse, Platform, ReportRequest,
+        ReportResponse, TunnelReport,
     },
     sing_box::ObservedTunnel,
 };
@@ -70,6 +70,8 @@ impl AtlasClient {
         &self,
         config: &Config,
         tunnels: &[ObservedTunnel],
+        applied_config_version: Option<u64>,
+        config_apply_error: Option<ConfigApplyErrorCode>,
         identity: &mut Identity,
         identity_path: &Path,
     ) -> Result<ReportResponse> {
@@ -80,6 +82,8 @@ impl AtlasClient {
             agent_version: env!("CARGO_PKG_VERSION"),
             labels: &config.labels,
             tunnels: tunnels.iter().map(TunnelReport::from).collect(),
+            applied_config_version,
+            config_apply_error,
         };
         let bytes = serde_json::to_vec(&body)?;
         let body_hash = hex::encode(Sha256::digest(&bytes));

@@ -1,31 +1,24 @@
 # TunnelAtlas（隧图）
 
-TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧道注册和发现服务。
+TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧道注册、托管和发现服务。
 
-本机 `tunnelatlasd` 维护协议声明、私密凭据、sing-box 配置和进程，并定期批量上报当前已应用的 inbound；Cloudflare Worker 不下发部署命令，只负责注册、鉴权、加密存储和查询。业务流量不经过 TunnelAtlas。
+管理员在 Cloudflare Worker 控制台集中定义期望隧道（支持 Shadowsocks、Hysteria2、TUIC、VLESS Reality、AnyTLS Reality 和 VMess WebSocket），本机 `tunnelatlasd` 负责安全接入、在本地生成协议凭据与证书、校验并原子收敛 sing-box 配置，并定期上报运行观测状态。业务流量不经过 TunnelAtlas。
 
 ## 仓库结构
 
-- `agent/`：Rust 守护程序，负责注册、签名和批量状态上报。
-- `worker/`：TypeScript Worker 和 D1 migration。
-- `deploy/`：systemd unit。
-- `docs/`：架构、协议、安全和开发文档。
+- `agent/`：Rust 守护程序，负责注册、签名、期望配置拉取、本地凭据生成、sing-box 监督和观测状态上报。
+- `worker/`：TypeScript Worker、D1 migration 与控制台前端。
+- `deploy/`：一键安装脚本与 systemd/OpenRC 托管文件。
+- `docs/`：架构、协议、安全、ADR 和开发文档。
 
-## 已实现
+## 核心特性
 
-- 管理员创建节点并获得 10 分钟有效的一次性注册码。
-- Agent 本地生成 Ed25519 密钥，私钥不离开主机。
-- Agent 使用签名请求和持久化单调序列号防止重放。
-- sing-box 配置在替换前通过 `sing-box check -c` 校验。
-- 合法配置原子替换并触发进程重启；非法配置不会影响当前实例。
-- sing-box 异常退出自动重启，SIGTERM/SIGINT 时优雅停止。
-- 单次报告批量同步该 Agent 的全部 sing-box inbound。
-- inbound 认证参数按字段白名单提取，并以 AES-256-GCM 加密后写入 D1。
-- D1 保存节点、隧道状态和最后活跃时间。
-- 发现 API 只返回在线 Agent 的隧道。
-- 节点订阅 API 使用 `READ_TOKEN` 鉴权，提供 Base64 编码的节点 URI 列表。
-- 同域管理控制台展示节点和隧道，并可创建、重置或删除节点及生成一次性注册码。
-- Rust CLI 提供交互式中文管理菜单，以及协议、链接、配置、服务、更新和卸载命令。
+- **云端集中管理，凭据本地私有**：在 Worker 控制台统一创建、编辑、隐藏、轮换或删除隧道；密码、UUID、Reality 私钥和 TLS 证书全在节点本地生成，绝不上报云端。
+- **配置版本控制与原子收敛**：Worker 单调递增 `config_version`；Agent 在本地执行事务收敛，经 `sing-box check` 校验、热启动及 500 ms 存活探查确认无误后才切换提交，任何失败无损回滚。
+- **防重放与请求验签**：基于 Ed25519 签名与严格单调自增序列号，杜绝乱序与重放。
+- **自动灾备与进程监督**：sing-box 异常退出自动重启；Worker 宕机或网络离线不影响本地正常运行与启动。
+- **丰富订阅与分发发现**：内置在线动态判定、Base64 订阅输出、Cloudflare CDN 边缘接入联动及细粒度隧道隐藏控制。
+- **极简运维 CLI**：提供交互式管理菜单以及配置检查、服务启停、日志查看、自动更新和干净卸载。
 
 ## 快速开始
 
@@ -41,7 +34,7 @@ sudo bash /tmp/tunnelatlas-install.sh
 rm -f /tmp/tunnelatlas-install.sh
 ```
 
-向导会依次询问 Worker、协议、端口和 sing-box 安装方式，最后静默读取一次性注册码并显示安装摘要。节点名称在控制台创建，注册码会将 Agent 绑定到该节点。
+向导会依次询问 Worker URL 与 sing-box 安装方式，最后静默读取一次性注册码并完成接入。节点接入后会自动从 Worker 获取期望隧道配置并启动。
 
 自动化部署使用 `--non-interactive`；该模式不会读取终端，所有必填值必须通过参数或环境变量传入：
 
@@ -50,36 +43,27 @@ curl -fsSL https://raw.githubusercontent.com/huochai67/tunnelatlas/main/deploy/i
 export TUNNELATLAS_ENROLLMENT_TOKEN='一次性注册码'
 sudo --preserve-env=TUNNELATLAS_ENROLLMENT_TOKEN bash /tmp/tunnelatlas-install.sh \
   --non-interactive \
-  --server-url https://你的-worker-域名 \
-  --sing-box-protocols ss,reality \
-  --sing-box-reality-port 443 \
-  --sing-box-reality-sni addons.mozilla.org
+  --server-url https://你的-worker-域名
 unset TUNNELATLAS_ENROLLMENT_TOKEN
 rm -f /tmp/tunnelatlas-install.sh
 ```
 
-脚本会自动识别 x86_64/ARM64 及 systemd/OpenRC、校验并安装最新 Release 和 sing-box、创建随机凭据、注册节点并启用开机服务。安装器仅支持干净系统；发现旧 TunnelAtlas 状态、外部 sing-box 配置或正在运行的独立 sing-box 服务时会直接停止。
-
-使用 `--skip-sing-box-install` 可要求必须预先存在 sing-box；使用 `--install-sing-box` 可强制安装 sing-box。Agent 永远不会读取 `/etc/sing-box/config.json`，生成配置位于 `/var/lib/tunnelatlas/sing-box.json`。
+脚本会自动识别 x86_64/ARM64 及 systemd/OpenRC、校验并安装最新 Release 和 sing-box、注册节点并启用开机服务。安装器仅支持干净系统；发现旧 TunnelAtlas 状态、外部 sing-box 配置或正在运行的独立 sing-box 服务时会直接停止。
 
 日常管理：
 
 ```bash
 sudo tunnelatlasd manage
-sudo tunnelatlasd protocol list
-sudo tunnelatlasd protocol add reality --port 443 --server-name addons.mozilla.org
-sudo tunnelatlasd protocol rotate vless-in
-sudo tunnelatlasd links
+sudo tunnelatlasd config show
+sudo tunnelatlasd config check
 sudo tunnelatlasd service status
+sudo tunnelatlasd service logs
 ```
 
-## 发布 Agent
+## 升级与版本发布顺序
 
-将 `agent/Cargo.toml` 中的版本提交后，在同一提交上推送对应的 `vX.Y.Z` 标签会触发 GitHub Actions。流水线通过检查后自动创建 GitHub Release，并附带 Linux x86_64、Linux ARM64 的 glibc/musl 压缩包及 `SHA256SUMS`。涉及破坏性 Worker migration 时，应先等待 Agent Release 完成，再将该提交合入 `main`：
+TunnelAtlas 从本地自治升级为 Worker 托管模型时采用手动重建平滑切割。部署与发布必须严格遵循以下顺序：
 
-```bash
-git tag v0.0.9
-git push origin v0.0.9
-```
-
-标签版本必须与 `tunnelatlasd` 的 Cargo 包版本一致，否则发布会停止。
+1. **部署加法 Worker**：首先部署包含 `0007_worker_managed_tunnel_configs.sql` 的新版 Worker。该版本完全兼容旧版 Agent。
+2. **在控制台重建期望隧道**：管理员登录 Worker 控制台，为各个节点创建所需的期望隧道配置（包括公网地址）。
+3. **发布与升级 Agent**：发布并升级各节点 Agent。升级后的 Agent 收到 Worker 下发的权威配置后完成收敛，主动清空旧本地 YAML 中的 `protocols` 与 `publicHost`，并发送首个数字版本报告触发服务端遗留数据清理。若升级前未在控制台配置隧道，空配置将停止本地旧隧道。

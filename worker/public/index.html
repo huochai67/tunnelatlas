@@ -89,10 +89,7 @@
             <span>一次性注册码</span>
             <code id="token-value"></code>
             <div><small id="token-expiry"></small><button id="copy-token" type="button">复制</button></div>
-            <span class="deploy-label" id="deploy-label">一键部署（默认 VLESS Reality）</span>
-            <label class="deploy-host-field" for="deploy-public-host">上报 IP 或域名（可选）</label>
-            <input id="deploy-public-host" maxlength="255" autocomplete="off" spellcheck="false" placeholder="留空则由 Worker 自动识别">
-            <small class="deploy-host-help">仅写入当前部署命令，不保存在控制面；留空则自动识别。</small>
+            <span class="deploy-label" id="deploy-label">一键部署命令</span>
             <pre><code id="deploy-command"></code></pre>
             <button class="copy-deploy" id="copy-deploy-command" type="button">复制一键部署命令</button>
           </div>
@@ -110,8 +107,8 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>状态</th><th>隧道</th><th>方向 / 协议</th><th>端点</th><th>Agent</th><th>订阅</th><th>Cloudflare</th><th>最后上报</th></tr></thead>
-            <tbody id="tunnel-table"><tr><td colspan="8" class="table-empty">暂无数据</td></tr></tbody>
+            <thead><tr><th>状态</th><th>隧道</th><th>方向 / 协议</th><th>端点</th><th>Agent</th><th>订阅</th><th>Cloudflare</th><th>最后上报</th><th>操作</th></tr></thead>
+            <tbody id="tunnel-table"><tr><td colspan="9" class="table-empty">暂无数据</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -131,6 +128,95 @@
       <div class="dialog-error hidden" id="auth-error"></div>
       <button class="primary-button" value="connect" type="submit">连接控制面 <span>→</span></button>
       <button class="small-ghost" value="cancel" type="button" id="auth-cancel">取消</button>
+    </form>
+  </dialog>
+
+  <dialog id="tunnel-dialog">
+    <form method="dialog" id="tunnel-form">
+      <div class="dialog-mark"><span></span></div>
+      <p class="eyebrow" id="tunnel-dialog-eyebrow">DESIRED TUNNEL CONFIGURATION</p>
+      <h2 id="tunnel-dialog-title">添加隧道</h2>
+      <input type="hidden" id="tunnel-id">
+      <input type="hidden" id="tunnel-node-id">
+
+      <label class="field-label" for="tunnel-node-select">目标节点</label>
+      <select id="tunnel-node-select" required></select>
+
+      <div class="form-row">
+        <div class="form-col">
+          <label class="field-label" for="tunnel-name">隧道名称</label>
+          <input id="tunnel-name" pattern="^[A-Za-z0-9_-]{1,64}$" required placeholder="ss-in">
+          <small class="field-help">1-64 个字符，仅字母、数字、_ 和 -。</small>
+        </div>
+        <div class="form-col">
+          <label class="field-label" for="tunnel-type">协议类型</label>
+          <select id="tunnel-type" required>
+            <option value="shadowsocks">Shadowsocks</option>
+            <option value="hysteria2">Hysteria2</option>
+            <option value="tuic">TUIC</option>
+            <option value="vless-reality">VLESS Reality</option>
+            <option value="anytls-reality">AnyTLS Reality</option>
+            <option value="vmess-ws">VMess WebSocket</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-col">
+          <label class="field-label" for="tunnel-port">监听端口</label>
+          <input id="tunnel-port" type="number" min="1" max="65535" required placeholder="8388">
+        </div>
+        <div class="form-col">
+          <label class="field-label" for="tunnel-listen">监听地址</label>
+          <input id="tunnel-listen" placeholder="::" value="::">
+        </div>
+      </div>
+
+      <label class="field-label" for="tunnel-public-host">公网地址 / 域名（可选）</label>
+      <input id="tunnel-public-host" placeholder="留空则由 Agent 自动识别">
+      <small class="field-help">公网 IP 或域名，不带端口。留空则由 Agent 自动上报识别。</small>
+
+      <div id="tunnel-opt-ss" class="tunnel-proto-options">
+        <label class="field-label" for="tunnel-ss-method">加密方式</label>
+        <select id="tunnel-ss-method">
+          <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
+          <option value="2022-blake3-aes-256-gcm">2022-blake3-aes-256-gcm</option>
+          <option value="2022-blake3-chacha20-poly1305">2022-blake3-chacha20-poly1305</option>
+        </select>
+      </div>
+
+      <div id="tunnel-opt-server-name" class="tunnel-proto-options hidden">
+        <label class="field-label" for="tunnel-server-name">SNI / 伪装域名</label>
+        <input id="tunnel-server-name" placeholder="www.bing.com">
+      </div>
+
+      <div id="tunnel-opt-tuic-cc" class="tunnel-proto-options hidden">
+        <label class="field-label" for="tunnel-tuic-cc">拥塞控制算法</label>
+        <select id="tunnel-tuic-cc">
+          <option value="bbr">bbr</option>
+          <option value="cubic">cubic</option>
+          <option value="new_reno">new_reno</option>
+        </select>
+      </div>
+
+      <div id="tunnel-opt-vmess" class="tunnel-proto-options hidden">
+        <div class="form-row">
+          <div class="form-col">
+            <label class="field-label" for="tunnel-vmess-path">WebSocket 路径</label>
+            <input id="tunnel-vmess-path" placeholder="/vmess" value="/vmess">
+          </div>
+          <div class="form-col">
+            <label class="field-label" for="tunnel-vmess-host">WebSocket Host 头（可选）</label>
+            <input id="tunnel-vmess-host" placeholder="proxy.example.com">
+          </div>
+        </div>
+      </div>
+
+      <div class="dialog-warning hidden" id="tunnel-cred-warning">注意：修改协议类型、Shadowsocks 加密方式或 Hysteria2/TUIC 证书域名将重新生成服务端凭据。</div>
+      <div class="dialog-error hidden" id="tunnel-error"></div>
+
+      <button class="primary-button" id="tunnel-submit-btn" type="submit">保存隧道配置 <span>→</span></button>
+      <button class="small-ghost" type="button" id="tunnel-cancel-btn">取消</button>
     </form>
   </dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

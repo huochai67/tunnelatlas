@@ -1,16 +1,23 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use tokio::time::{Duration, MissedTickBehavior};
+use fs2::FileExt;
+use tokio::time::MissedTickBehavior;
 use tunnelatlasd::{
     client::AtlasClient,
     config::Config,
+    convergence,
     identity::Identity,
-    manager::{self, ConfigCommand, ProtocolCommand, ServiceCommand, UpdateCommand},
+    manager::{self, ConfigCommand, ServiceCommand, UpdateCommand},
     render,
     runtime::RuntimeState,
     secrets::SecretStore,
+    service,
     sing_box::SingBoxSupervisor,
 };
 
@@ -18,11 +25,10 @@ use tunnelatlasd::{
 #[command(
     name = "tunnelatlasd",
     version,
-    about = "TunnelAtlas sing-box management agent"
+    about = "TunnelAtlas node daemon and management CLI"
 )]
 struct Cli {
     #[arg(
-        short,
         long,
         default_value = "/etc/tunnelatlas/config.yaml",
         env = "TUNNELATLAS_CONFIG"
@@ -45,11 +51,6 @@ enum Command {
     Run,
     Check,
     Manage,
-    Protocol {
-        #[command(subcommand)]
-        command: Box<ProtocolCommand>,
-    },
-    Links,
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -81,17 +82,15 @@ async fn main() -> Result<()> {
         Command::ReportOnce => {
             let config = Config::load(&cli.config)?;
             let client = AtlasClient::new(&config.server_url)?;
-            report_once(&client, &config, &cli.identity).await?;
+            report_once(&client, config, &cli.config, &cli.identity).await?;
         }
         Command::Run => {
             let config = Config::load(&cli.config)?;
             let client = AtlasClient::new(&config.server_url)?;
-            run(client, config, cli.identity).await?;
+            run(client, config, cli.config, cli.identity).await?;
         }
         Command::Check => manager::config(ConfigCommand::Check, &cli.config).await?,
         Command::Manage => manager::manage(&cli.config, &cli.identity).await?,
-        Command::Protocol { command } => manager::protocol(*command, &cli.config).await?,
-        Command::Links => manager::show_links(&cli.config)?,
         Command::Config { command } => manager::config(command, &cli.config).await?,
         Command::Service { command } => manager::service_command(command)?,
         Command::Update { command } => manager::update(command, &cli.config).await?,
@@ -118,27 +117,112 @@ async fn enroll(client: &AtlasClient, config: &Config, identity_path: &Path) -> 
     Identity::from_enrollment(response.agent_id, &key).save(identity_path)
 }
 
-async fn prepared(
-    config: &Config,
-    status: &str,
-) -> Result<(SecretStore, render::RenderedConfig, SingBoxSupervisor)> {
-    let secrets_path = Path::new(&config.sing_box.secrets_path);
-    let mut secrets = SecretStore::load(secrets_path)?;
-    secrets.reconcile(config)?;
-    secrets.save(secrets_path)?;
-    let rendered = render::render(config, &secrets, status)?;
-    let supervisor = SingBoxSupervisor::new(config.sing_box.clone());
-    supervisor.prepare(&rendered.bytes).await?;
-    Ok((secrets, rendered, supervisor))
-}
+async fn report_once(
+    client: &AtlasClient,
+    mut config: Config,
+    config_path: &Path,
+    identity_path: &Path,
+) -> Result<()> {
+    if service::is_active()? {
+        bail!("cannot run report-once while TunnelAtlas service is active");
+    }
 
-async fn report_once(client: &AtlasClient, config: &Config, identity_path: &Path) -> Result<()> {
+    let lock_path = Path::new(&config.sing_box.secrets_path)
+        .parent()
+        .unwrap_or(Path::new("/var/lib/tunnelatlas"))
+        .join("control.lock");
+    if let Some(parent) = lock_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    lock_file
+        .lock_exclusive()
+        .context("failed to acquire control.lock")?;
+
     let mut identity = Identity::load(identity_path)?;
-    let (_, rendered, _) = prepared(config, "stopped").await?;
+    let runtime_path = PathBuf::from(&config.runtime_path);
+    let runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+
+    let (initial_tunnels, initial_version) = if let Some(applied) = &runtime.applied_desired_config
+    {
+        let secrets =
+            SecretStore::load(Path::new(&config.sing_box.secrets_path)).unwrap_or_default();
+        let rendered = render::render_desired(
+            &applied.tunnels,
+            &secrets,
+            Path::new(&config.sing_box.certificates_directory),
+            runtime.observed_address.as_deref(),
+            "stopped",
+        )?;
+        (rendered.tunnels, Some(applied.version))
+    } else {
+        (vec![], None)
+    };
+
     let response = client
-        .report(config, &rendered.tunnels, &mut identity, identity_path)
+        .report(
+            &config,
+            &initial_tunnels,
+            initial_version,
+            runtime.last_apply_error,
+            &mut identity,
+            identity_path,
+        )
         .await?;
-    save_runtime(config, response.observed_address)?;
+
+    let mut supervisor = SingBoxSupervisor::new(config.sing_box.clone());
+    let mut current_runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+    if response.observed_address.is_some() {
+        current_runtime.observed_address = response.observed_address.clone();
+        let _ = current_runtime.save(&runtime_path);
+    }
+
+    let need_converge = match &current_runtime.applied_desired_config {
+        None => true,
+        Some(applied) => response.desired_config.version > applied.version,
+    };
+
+    if need_converge {
+        let _outcome = convergence::converge(
+            &mut config,
+            config_path,
+            &response.desired_config,
+            &mut supervisor,
+            current_runtime.observed_address.as_deref(),
+        )
+        .await
+        .map_err(|(code, err)| anyhow::anyhow!("convergence failed ({:?}): {err}", code))?;
+
+        let _ = supervisor.stop().await;
+
+        let secrets =
+            SecretStore::load(Path::new(&config.sing_box.secrets_path)).unwrap_or_default();
+        let rendered = render::render_desired(
+            &response.desired_config.tunnels,
+            &secrets,
+            Path::new(&config.sing_box.certificates_directory),
+            current_runtime.observed_address.as_deref(),
+            "stopped",
+        )?;
+        let _ = client
+            .report(
+                &config,
+                &rendered.tunnels,
+                Some(response.desired_config.version),
+                None,
+                &mut identity,
+                identity_path,
+            )
+            .await?;
+    } else {
+        let _ = supervisor.stop().await;
+    }
+
     println!(
         "report accepted at sequence {} ({})",
         response.accepted_sequence, response.server_time
@@ -146,19 +230,55 @@ async fn report_once(client: &AtlasClient, config: &Config, identity_path: &Path
     Ok(())
 }
 
-async fn run(client: AtlasClient, config: Config, identity_path: PathBuf) -> Result<()> {
+async fn run(
+    client: AtlasClient,
+    mut config: Config,
+    config_path: PathBuf,
+    identity_path: PathBuf,
+) -> Result<()> {
     if !identity_path.exists() {
         enroll(&client, &config, &identity_path).await?;
     }
     let mut identity = Identity::load(&identity_path)?;
-    set_process_health(&config, false)?;
-    let (secrets, _, mut supervisor) = prepared(&config, "healthy").await?;
-    supervisor.start().await?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    if let Some(exit) = supervisor.poll()? {
-        bail!("sing-box exited during startup with {exit}");
+    let runtime_path = PathBuf::from(&config.runtime_path);
+    let mut runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+    let mut supervisor = SingBoxSupervisor::new(config.sing_box.clone());
+
+    if let Some(cached) = &runtime.applied_desired_config {
+        if config.has_legacy_tunnels() {
+            config.clear_legacy_tunnels();
+            let _ = config.save(&config_path);
+        }
+        if !cached.tunnels.is_empty() {
+            let secrets = SecretStore::load(Path::new(&config.sing_box.secrets_path))?;
+            let rendered = render::render_desired(
+                &cached.tunnels,
+                &secrets,
+                Path::new(&config.sing_box.certificates_directory),
+                runtime.observed_address.as_deref(),
+                "healthy",
+            )?;
+            supervisor.prepare(&rendered.bytes).await?;
+            supervisor.start().await?;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Some(exit) = supervisor.poll()? {
+                bail!("sing-box exited during startup with {exit}");
+            }
+        }
+        runtime.process_healthy = true;
+        let _ = runtime.save(&runtime_path);
+    } else {
+        let managed_path = Path::new(&config.sing_box.managed_config_path);
+        if managed_path.exists() {
+            let _ = supervisor.start().await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Some(exit) = supervisor.poll()? {
+                bail!("sing-box exited during startup with {exit}");
+            }
+        }
+        runtime.process_healthy = true;
+        let _ = runtime.save(&runtime_path);
     }
-    set_process_health(&config, true)?;
 
     let mut report_interval =
         tokio::time::interval(Duration::from_secs(config.report_interval_seconds));
@@ -170,74 +290,127 @@ async fn run(client: AtlasClient, config: Config, identity_path: PathBuf) -> Res
         tokio::select! {
             _ = shutdown_signal() => {
                 println!("shutdown requested");
-                let _ = set_process_health(&config, false);
+                let mut runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+                runtime.process_healthy = false;
+                let _ = runtime.save(&runtime_path);
                 supervisor.stop().await?;
                 return Ok(());
             }
             _ = report_interval.tick() => {
-                let rendered = render::render(&config, &secrets, supervisor.status().as_str())?;
-                match client.report(&config, &rendered.tunnels, &mut identity, &identity_path).await {
+                let runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+                let (tunnels, applied_version) = if let Some(applied) = &runtime.applied_desired_config {
+                    let secrets = SecretStore::load(Path::new(&config.sing_box.secrets_path)).unwrap_or_default();
+                    let rendered = render::render_desired(
+                        &applied.tunnels,
+                        &secrets,
+                        Path::new(&config.sing_box.certificates_directory),
+                        runtime.observed_address.as_deref(),
+                        supervisor.status().as_str(),
+                    );
+                    match rendered {
+                        Ok(r) => (r.tunnels, Some(applied.version)),
+                        Err(e) => {
+                            eprintln!("failed to render observed tunnels: {e:#}");
+                            (vec![], Some(applied.version))
+                        }
+                    }
+                } else {
+                    (vec![], None)
+                };
+
+                match client.report(&config, &tunnels, applied_version, runtime.last_apply_error, &mut identity, &identity_path).await {
                     Ok(response) => {
-                        if let Err(error) = save_runtime(&config, response.observed_address) { eprintln!("runtime state save failed: {error:#}"); }
+                        let mut runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+                        if response.observed_address.is_some() {
+                            runtime.observed_address = response.observed_address;
+                            let _ = runtime.save(&runtime_path);
+                        }
                         println!("report accepted: sequence={}", response.accepted_sequence);
+
+                        let need_converge = match &runtime.applied_desired_config {
+                            None => true,
+                            Some(applied) => response.desired_config.version > applied.version,
+                        };
+                        if let Some(applied) = &runtime.applied_desired_config
+                            && response.desired_config.version < applied.version
+                        {
+                            eprintln!(
+                                "warning: Worker returned stale desired version {} (local is {})",
+                                response.desired_config.version, applied.version
+                            );
+                        }
+
+                        if need_converge {
+                            match convergence::converge(
+                                &mut config,
+                                &config_path,
+                                &response.desired_config,
+                                &mut supervisor,
+                                runtime.observed_address.as_deref(),
+                            ).await {
+                                Ok(outcome) => {
+                                    println!("desired config version {} applied successfully", response.desired_config.version);
+                                    let mut runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+                                    runtime.applied_desired_config = Some(response.desired_config.clone());
+                                    runtime.last_apply_error = None;
+                                    runtime.process_healthy = true;
+                                    let _ = runtime.save(&runtime_path);
+
+                                    let ack = client.report(
+                                        &config,
+                                        &outcome.tunnels,
+                                        Some(response.desired_config.version),
+                                        None,
+                                        &mut identity,
+                                        &identity_path,
+                                    ).await;
+                                    if let Err(e) = ack {
+                                        eprintln!("acknowledgement report failed: {e:#}");
+                                    }
+                                }
+                                Err((err_code, err)) => {
+                                    eprintln!("convergence failed: {err:#}");
+                                    let mut runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+                                    runtime.last_apply_error = Some(err_code);
+                                    let _ = runtime.save(&runtime_path);
+                                }
+                            }
+                        }
                     }
                     Err(error) => eprintln!("report failed: {error:#}"),
                 }
             }
             _ = process_interval.tick() => {
-                if let Some(exit) = supervisor.poll()? {
-                    eprintln!("sing-box exited with {exit}; restarting after delay");
-                    let _ = set_process_health(&config, false);
-                    tokio::time::sleep(Duration::from_secs(supervisor.settings().restart_delay_seconds)).await;
-                    restore_and_start(&config, &secrets, &mut supervisor).await;
-                } else if !supervisor.is_running() {
-                    tokio::time::sleep(Duration::from_secs(supervisor.settings().restart_delay_seconds)).await;
-                    restore_and_start(&config, &secrets, &mut supervisor).await;
+                let runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
+                let expects_child = match &runtime.applied_desired_config {
+                    Some(applied) => !applied.tunnels.is_empty(),
+                    None => Path::new(&config.sing_box.managed_config_path).exists(),
+                };
+
+                if expects_child {
+                    if let Some(exit) = supervisor.poll()? {
+                        eprintln!("sing-box exited with {exit}; restarting after delay");
+                        tokio::time::sleep(Duration::from_secs(supervisor.settings().restart_delay_seconds)).await;
+                        let _ = supervisor.start().await;
+                    } else if !supervisor.is_running() {
+                        tokio::time::sleep(Duration::from_secs(supervisor.settings().restart_delay_seconds)).await;
+                        let _ = supervisor.start().await;
+                    }
                 }
             }
         }
     }
 }
 
-async fn restore_and_start(
-    config: &Config,
-    secrets: &SecretStore,
-    supervisor: &mut SingBoxSupervisor,
-) {
-    let result = async {
-        let rendered = render::render(config, secrets, "healthy")?;
-        supervisor.prepare(&rendered.bytes).await?;
-        supervisor.start().await
-    }
-    .await;
-    if let Err(error) = result {
-        eprintln!("sing-box start retry failed: {error:#}");
-    } else if let Err(error) = set_process_health(config, true) {
-        eprintln!("runtime state save failed: {error:#}");
-    }
-}
-
-fn save_runtime(config: &Config, observed_address: Option<String>) -> Result<()> {
-    let path = Path::new(&config.runtime_path);
-    let mut runtime = RuntimeState::load(path)?;
-    if observed_address.is_some() {
-        runtime.observed_address = observed_address;
-    }
-    runtime.save(path)
-}
-
-fn set_process_health(config: &Config, healthy: bool) -> Result<()> {
-    let path = Path::new(&config.runtime_path);
-    let mut runtime = RuntimeState::load(path)?;
-    runtime.process_healthy = healthy;
-    runtime.save(path)
-}
-
 #[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};
-    let mut terminate = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
-    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+    let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT listener");
+    let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM listener");
+    tokio::select! {
+        _ = sigint.recv() => {}
+        _ = sigterm.recv() => {}
+    }
 }
 
 #[cfg(not(unix))]

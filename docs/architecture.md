@@ -1,43 +1,42 @@
 # 架构
 
-TunnelAtlas 采用“本地自治、云端注册发现”的模型：
+TunnelAtlas 采用“Worker 托管期望配置、Agent 本地维护凭据并收敛执行”的模型：
 
 ```mermaid
 flowchart LR
-  CFG["TunnelAtlas YAML + secrets"] --> AG["tunnelatlasd"]
-  AG -->|"校验、原子替换、监督"| ENG["sing-box"]
-  AG -->|"注册、批量心跳、状态"| WK["Cloudflare Worker"]
-  WK --> D1["D1 注册表"]
-  CL["发现客户端"] -->|"查询在线隧道"| WK
+  ADM["管理员"] -->|"CRUD / 轮换凭据"| WK["Cloudflare Worker"]
+  WK --> D1["D1 注册表 (tunnel_configs)"]
+  AG["tunnelatlasd"] -->|"周期报告 (带签名与序列)"| WK
+  WK -->|"下发期望配置 (desiredConfig)"| AG
+  AG -->|"本地生成密钥 / 渲染校验"| ENG["sing-box"]
+  AG -->|"上报观测状态与客户端认证"| WK
+  CL["订阅 / 发现客户端"] -->|"查询在线隧道"| WK
 ```
 
-Worker 不管理本机进程、不下发配置，也不转发隧道业务流量。Agent 从 TunnelAtlas YAML 协议声明和本地 secrets 渲染配置，调用 sing-box 自身校验后原子写入托管配置，再监督 `sing-box run -c <managed-config>`。
-
-## 可选 Cloudflare 数据面跳点
-
-启用 VMess-WS 隧道的 Cloudflare 前端后，数据面变为 `客户端 → Cloudflare 边缘（WSS 443）→ 源站 WS 端点`。Worker 只负责控制面：解析 zone、创建代理 DNS 记录、启用 WebSockets、安装精确主机名的 Flexible SSL 配置规则和精确主机名+路径的 Origin 端口改写规则，并把资源 ID 与状态记录在 D1。Worker 仍然不转发 VMess 字节；边缘与源站之间是直连的明文 WS，改写仅发生在目标端口。订阅 URI 在 `active` 期间指向生成的 `ta-` 主机名，其余状态回退直连。
+Worker 负责节点注册、集中期望隧道定义（`tunnel_configs`）、配置版本递增、认证信息加密存储和发现订阅 API。
+Agent 负责节点接入、获取期望配置、在本地生成协议凭据（`secrets.json`）与证书、原子收敛渲染托管配置并监督 `sing-box` 进程，定期批量上报运行时观测状态。
 
 ## 本机收敛流程
 
-1. 读取协议声明，补齐持久化凭据和证书并渲染 JSON。
-2. 写入与托管文件同目录的 `candidate.json`，权限为 `0600`。
-3. 执行 `sing-box check -c candidate.json`。
-4. 校验成功后通过 rename 原子替换托管配置；管理命令随后重启 Agent 服务。
-5. 校验失败时删除候选文件，保持旧配置和当前进程。
-6. 每两秒检查子进程；异常退出后按配置的退避时间重启。
+1. **锁与快照**：获取 `control.lock` 独占锁，快照备份托管 JSON、`secrets.json`、证书目录、YAML 配置以及运行时状态。
+2. **期望校验**：校验 Worker 下发的期望配置（隧道数量 <= 64，名称、端口、监听地址合法且唯一，协议选项符合规范）。若校验失败，记录 `invalid_desired_config`。
+3. **空配置处理**：若期望隧道列表为空，停止正在运行的 sing-box，将权威版本更新至 `runtime.json`，保留最后一份托管 JSON 供诊断，并完成收敛。
+4. **凭据与证书对齐**：对每条期望隧道，根据 `credentialGeneration` 与协议类型在本地按需生成密钥，并为 Hysteria2/TUIC 签发按 ID 与代数命名的自签名证书。
+5. **渲染与校验**：渲染完整的 sing-box JSON，写入候选文件执行 `sing-box check` 与 `sing-box format`。若失败，记录 `sing_box_validation_failed`。
+6. **热切换与启动探查**：将校验通过的文件原子替换至托管路径，启动或重启 sing-box 子进程并等待 500 ms 探查其存活状态。若退出，记录 `sing_box_start_failed`。
+7. **持久化与清理**：校验和启动均成功后，提交更新后的 `secrets.json`，清理废弃证书，将新版本与成功状态存入 `runtime.json`。
+8. **旧配置裁撤**：若本地 YAML 中包含旧版 `protocols` 或 `publicHost`，首次收敛成功后将其清除并重写 YAML，记录日志通知管理员配置已由 Worker 接管。
+9. **失败恢复**：任何步骤失败均无损恢复全套快照，重启先前有效实例，确保网络波动或非法配置绝不破坏正在运行的正常服务。
 
 ## 数据模型
 
-- Node：唯一管理实体；创建后先处于待接入状态，Agent 认领后保存设备公钥、标签、最后序列号和最后活跃时间。
-- EnrollmentToken：绑定 Node、10 分钟有效、仅使用一次；重新生成时废止该节点的旧码。
-- Tunnel：隶属于 Node 的 inbound 端点、协议、状态、元数据和加密认证参数。
+- **Node**：物理节点实体，记录设备公钥、配置版本号 `config_version`、Agent 已确认版本号 `applied_config_version`、申请错误码 `config_apply_error`、最后序列号与活跃时间。
+- **TunnelConfig**：Worker 托管的期望隧道，主键 `(node_id, id)`，包含 `name`、`type`、`listen`、`port`、`public_host`、协议选项 JSON、`credential_generation` 与 `subscription_enabled`。
+- **Tunnel**：Agent 上报的实际观测状态，包含 `node_id`、`id`、端点、协议、运行状态、公开元数据及 AES-256-GCM 加密的客户端认证参数。
+- **TunnelCloudflareFrontend**：为 VMess-WS 隧道提供的 Cloudflare CDN 前端，跟踪 DNS 记录、规则与状态。
 
-Agent 直接从当前已应用的声明状态构造上报，不反向解析生成的 sing-box JSON。上报只包含建立客户端连接所需的认证字段和公开参数；Reality 私钥、TLS 私钥路径和完整配置不会离开节点。Worker 使用 AES-256-GCM 加密认证对象后写入 D1，每次报告携带完整 inbound 集合，具有快照语义。
+## 在线判定与订阅控制
 
-## 在线判定
-
-Worker 不运行后台清理任务。查询时使用 `nodes.last_seen_at` 与 `AGENT_OFFLINE_SECONDS` 动态过滤，默认 180 秒。离线记录保留在 D1，便于后续诊断和恢复。
-
-## 当前边界
-
-当前运行状态来自受监督子进程是否存活，尚未接入 sing-box Clash API 或 1.14+ gRPC API，因此不能提供连接数、流量和 outbound URLTest 等深层健康信息。
+- 查询在线隧道使用 `nodes.last_seen_at` 与 `AGENT_OFFLINE_SECONDS` 动态过滤，默认 180 秒。
+- 订阅 API 仅输出在线节点上状态为 `healthy`、认证完整的隧道。
+- 对于已完成版本收敛的节点，订阅可见性直接由 `tunnel_configs.subscription_enabled` 控制。

@@ -14,7 +14,6 @@ ed25519-dalek = { version = "2.2", features = ["rand_core"] }
 fs2 = "0.4"
 hex = "0.4"
 nix = { version = "0.30", features = ["signal"] }
-percent-encoding = "2.3"
 rand = "0.8"
 rcgen = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

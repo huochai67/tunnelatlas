@@ -1555,7 +1555,6 @@ dependencies = [
  "fs2",
  "hex",
  "nix",
- "percent-encoding",
  "rand 0.8.7",
  "rcgen",
  "reqwest",

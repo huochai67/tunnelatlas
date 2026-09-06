@@ -1,9 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    io::Write,
-    path::Path,
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -32,27 +27,9 @@ fn default_runtime() -> String {
 fn default_certificates() -> String {
     "/var/lib/tunnelatlas/certificates".to_owned()
 }
-fn default_listen() -> String {
-    "::".to_owned()
-}
-fn default_ss_method() -> String {
-    "2022-blake3-aes-128-gcm".to_owned()
-}
-fn default_tls_name() -> String {
-    "www.bing.com".to_owned()
-}
-fn default_reality_name() -> String {
-    "addons.mozilla.org".to_owned()
-}
-fn default_congestion_control() -> String {
-    "bbr".to_owned()
-}
-fn default_ws_path() -> String {
-    "/vmess".to_owned()
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct Config {
     pub server_url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,13 +38,13 @@ pub struct Config {
     pub report_interval_seconds: u64,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub public_host: Option<String>,
     #[serde(default = "default_runtime")]
     pub runtime_path: String,
     pub sing_box: SingBoxSettings,
-    #[serde(default)]
-    pub protocols: Vec<ProtocolSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) public_host: Option<serde_yaml::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) protocols: Option<serde_yaml::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,77 +65,32 @@ pub struct SingBoxSettings {
     pub shutdown_timeout_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProtocolSpec {
-    pub tag: String,
-    #[serde(default = "default_listen")]
-    pub listen: String,
-    pub port: u16,
-    #[serde(flatten)]
-    pub kind: ProtocolKind,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(
-    tag = "type",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum ProtocolKind {
-    Shadowsocks {
-        #[serde(default = "default_ss_method")]
-        method: String,
-    },
-    Hysteria2 {
-        #[serde(default = "default_tls_name")]
-        server_name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        certificate_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key_path: Option<String>,
-    },
-    Tuic {
-        #[serde(default = "default_tls_name")]
-        server_name: String,
-        #[serde(default = "default_congestion_control")]
-        congestion_control: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        certificate_path: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key_path: Option<String>,
-    },
-    VlessReality {
-        #[serde(default = "default_reality_name")]
-        server_name: String,
-    },
-    AnytlsReality {
-        #[serde(default = "default_reality_name")]
-        server_name: String,
-    },
-    VmessWs {
-        #[serde(default = "default_ws_path")]
-        path: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        host: Option<String>,
-    },
-}
-
-impl ProtocolKind {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Shadowsocks { .. } => "shadowsocks",
-            Self::Hysteria2 { .. } => "hysteria2",
-            Self::Tuic { .. } => "tuic",
-            Self::VlessReality { .. } => "vless-reality",
-            Self::AnytlsReality { .. } => "anytls-reality",
-            Self::VmessWs { .. } => "vmess-ws",
+impl Default for SingBoxSettings {
+    fn default() -> Self {
+        Self {
+            binary_path: default_binary(),
+            managed_config_path: default_managed_config(),
+            secrets_path: default_secrets(),
+            certificates_directory: default_certificates(),
+            working_directory: None,
+            restart_delay_seconds: default_restart_delay(),
+            shutdown_timeout_seconds: default_shutdown_timeout(),
         }
     }
 }
 
 impl Config {
+    pub fn has_legacy_tunnels(&self) -> bool {
+        self.public_host.is_some() || self.protocols.is_some()
+    }
+
+    pub fn clear_legacy_tunnels(&mut self) -> bool {
+        let had = self.has_legacy_tunnels();
+        self.public_host = None;
+        self.protocols = None;
+        had
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
@@ -185,27 +117,6 @@ impl Config {
         if self.report_interval_seconds < 15 {
             bail!("reportIntervalSeconds must be at least 15");
         }
-        if self.protocols.len() > 64 {
-            bail!("protocols must contain at most 64 entries");
-        }
-        if self.public_host.as_deref().is_some_and(|host| {
-            host.trim().is_empty() || host.chars().any(char::is_whitespace) || host.contains('/')
-        }) {
-            bail!("publicHost must be a hostname or IP address without a port");
-        }
-        if let Some(host) = self
-            .public_host
-            .as_deref()
-            .filter(|host| host.contains(':'))
-        {
-            let unbracketed = host
-                .strip_prefix('[')
-                .and_then(|value| value.strip_suffix(']'))
-                .unwrap_or(host);
-            if unbracketed.parse::<std::net::Ipv6Addr>().is_err() {
-                bail!("publicHost must not include a port");
-            }
-        }
         if self.sing_box.binary_path.is_empty()
             || self.sing_box.managed_config_path.is_empty()
             || self.sing_box.secrets_path.is_empty()
@@ -217,73 +128,6 @@ impl Config {
         }
         if self.sing_box.shutdown_timeout_seconds == 0 {
             bail!("singBox.shutdownTimeoutSeconds must be greater than zero");
-        }
-        let mut tags = BTreeSet::new();
-        let mut ports = BTreeSet::new();
-        for protocol in &self.protocols {
-            if protocol.port == 0 {
-                bail!("protocol {} port must be between 1 and 65535", protocol.tag);
-            }
-            if protocol.tag.trim().is_empty()
-                || !protocol
-                    .tag
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-            {
-                bail!("protocol tag must contain only letters, numbers, '-' and '_'");
-            }
-            if !tags.insert(&protocol.tag) {
-                bail!("duplicate protocol tag: {}", protocol.tag);
-            }
-            if !ports.insert(protocol.port) {
-                bail!("duplicate protocol port: {}", protocol.port);
-            }
-            if protocol.listen.trim().is_empty() {
-                bail!("protocol {} listen address cannot be empty", protocol.tag);
-            }
-            match &protocol.kind {
-                ProtocolKind::Shadowsocks { method } if method.trim().is_empty() => {
-                    bail!("Shadowsocks method cannot be empty")
-                }
-                ProtocolKind::Hysteria2 {
-                    server_name,
-                    certificate_path,
-                    key_path,
-                }
-                | ProtocolKind::Tuic {
-                    server_name,
-                    certificate_path,
-                    key_path,
-                    ..
-                } => {
-                    if server_name.trim().is_empty() {
-                        bail!("TLS serverName cannot be empty");
-                    }
-                    if certificate_path.is_some() != key_path.is_some() {
-                        bail!("certificatePath and keyPath must be provided together");
-                    }
-                    if let (Some(certificate), Some(key)) = (certificate_path, key_path) {
-                        let directory = Path::new(&self.sing_box.certificates_directory);
-                        if !Path::new(certificate).starts_with(directory)
-                            || !Path::new(key).starts_with(directory)
-                        {
-                            bail!(
-                                "external certificates must be imported into singBox.certificatesDirectory"
-                            );
-                        }
-                    }
-                }
-                ProtocolKind::VlessReality { server_name }
-                | ProtocolKind::AnytlsReality { server_name }
-                    if server_name.trim().is_empty() =>
-                {
-                    bail!("Reality serverName cannot be empty")
-                }
-                ProtocolKind::VmessWs { path, .. } if !path.starts_with('/') => {
-                    bail!("VMess WebSocket path must start with '/'")
-                }
-                _ => {}
-            }
         }
         Ok(())
     }
@@ -304,6 +148,7 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
             .mode(0o600)
             .open(&candidate)
             .with_context(|| format!("failed to create {}", candidate.display()))?;
+        use std::io::Write;
         file.write_all(bytes)?;
         file.sync_all()?;
     }
@@ -319,84 +164,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_duplicate_tags_and_ports() {
+    fn preserves_legacy_fields_until_cleared() {
         let yaml = r#"
 serverUrl: https://example.com
+publicHost: 203.0.113.1
 singBox: {}
 protocols:
-  - { tag: one, port: 443, type: shadowsocks }
-  - { tag: one, port: 444, type: vmess-ws }
+  - tag: one
+    port: 443
+    type: shadowsocks
 "#;
-        let config: Config = serde_yaml::from_str(yaml).unwrap();
-        assert!(
-            config
-                .validate()
-                .unwrap_err()
-                .to_string()
-                .contains("duplicate protocol tag")
-        );
+        let mut config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.has_legacy_tunnels());
+
+        // Serializing without clearing preserves the fields
+        let serialized = serde_yaml::to_string(&config).unwrap();
+        assert!(serialized.contains("publicHost"));
+        assert!(serialized.contains("protocols"));
+
+        // Clear legacy fields
+        assert!(config.clear_legacy_tunnels());
+        assert!(!config.has_legacy_tunnels());
+
+        // Serializing after clearing omits them
+        let cleared = serde_yaml::to_string(&config).unwrap();
+        assert!(!cleared.contains("publicHost"));
+        assert!(!cleared.contains("protocols"));
     }
 
     #[test]
-    fn old_source_config_field_is_not_accepted() {
+    fn validates_url_and_report_interval() {
         let yaml = r#"
-serverUrl: https://example.com
-singBox:
-  sourceConfigPath: /etc/sing-box/config.json
-"#;
-        assert!(serde_yaml::from_str::<Config>(yaml).is_err());
-    }
-
-    #[test]
-    fn legacy_site_and_agent_names_are_not_accepted() {
-        let yaml = r#"
-serverUrl: https://example.com
-agentName: edge
-siteId: home
+serverUrl: http://example.com
 singBox: {}
 "#;
-        assert!(serde_yaml::from_str::<Config>(yaml).is_err());
-    }
-
-    #[test]
-    fn public_host_accepts_supported_address_forms_and_rejects_ports() {
-        for host in [
-            "proxy.example.com",
-            "203.0.113.8",
-            "2001:db8::8",
-            "[2001:db8::8]",
-        ] {
-            let config: Config = serde_yaml::from_str(&format!(
-                "serverUrl: https://example.com\nsingBox: {{}}\npublicHost: \"{host}\"\n"
-            ))
-            .unwrap();
-            config
-                .validate()
-                .unwrap_or_else(|error| panic!("{host:?} must validate: {error}"));
-        }
-        for host in ["", "   ", "/", "proxy.example.com:443", "[2001:db8::8]:443"] {
-            let config: Config = serde_yaml::from_str(&format!(
-                "serverUrl: https://example.com\nsingBox: {{}}\npublicHost: \"{host}\"\n"
-            ))
-            .unwrap();
-            assert!(
-                config.validate().is_err(),
-                "{host:?} must be rejected by validate"
-            );
-        }
-    }
-
-    #[test]
-    fn protocol_options_use_camel_case() {
-        let yaml = r#"
-serverUrl: https://example.com
-singBox: {}
-protocols:
-  - { tag: reality, port: 443, type: vless-reality, serverName: example.com }
-"#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
-        let encoded = serde_yaml::to_string(&config).unwrap();
-        assert!(encoded.contains("serverName: example.com"));
-        assert!(!encoded.contains("server_name"));
+        assert!(config.validate().is_err());
+
+        let short_interval = r#"
+serverUrl: https://example.com
+reportIntervalSeconds: 5
+singBox: {}
+"#;
+        let config: Config = serde_yaml::from_str(short_interval).unwrap();
+        assert!(config.validate().is_err());
     }
 }

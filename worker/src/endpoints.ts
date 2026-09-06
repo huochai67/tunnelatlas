@@ -119,3 +119,15 @@ export function validFrontendAddress(value: string): boolean {
   if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed)) return false;
   return HOSTNAME.test(trimmed);
 }
+
+export function validIpAddress(value: string): boolean {
+  let trimmed = value.trim();
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    trimmed = trimmed.slice(1, -1);
+  }
+  if (!trimmed) return false;
+  if (trimmed.includes(":")) {
+    return ipv6Groups(trimmed) !== null;
+  }
+  return ipv4Octets(trimmed) !== null;
+}
