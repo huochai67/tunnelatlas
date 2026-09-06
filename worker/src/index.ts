@@ -261,6 +261,26 @@ async function resetEnrollment(request: Request, env: Env, encodedNodeId: string
   });
 }
 
+async function updateNodeSubscription(request: Request, env: Env, encodedNodeId: string): Promise<Response> {
+  requireToken(request, env.ADMIN_TOKEN);
+  const nodeId = resourceId(encodedNodeId);
+  const body = await readJson<Record<string, unknown>>(request);
+  if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.subscriptionEnabled !== "boolean") {
+    throw new HttpError(400, "Invalid subscriptionEnabled");
+  }
+  const updated = await env.DB.prepare(
+    "UPDATE nodes SET subscription_enabled = ? WHERE id = ? RETURNING id, name, subscription_enabled",
+  ).bind(body.subscriptionEnabled ? 1 : 0, nodeId).first<{ id: string; name: string; subscription_enabled: number }>();
+  if (!updated) throw new HttpError(404, "Node not found");
+  return json({
+    node: {
+      id: updated.id,
+      name: updated.name,
+      subscriptionEnabled: Boolean(updated.subscription_enabled),
+    },
+  });
+}
+
 async function deleteNode(request: Request, env: Env, encodedNodeId: string): Promise<Response> {
   requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
@@ -467,14 +487,14 @@ async function tunnelFromRow(row: Record<string, unknown>, env: Env): Promise<Re
   };
 }
 
-function tunnelQuery(filter: boolean, onlineOnly: boolean): string {
+function tunnelQuery(filter: boolean, onlineOnly: boolean, subscriptionOnly = false): string {
   return `SELECT t.id, t.node_id, t.name, t.kind, t.endpoint, t.protocol, t.status,
     t.metadata_json, t.authentication_ciphertext, t.last_seen_at, n.name AS node_name,
     cf.hostname AS cf_hostname, cf.status AS cf_status, cf.source_endpoint AS cf_source_endpoint,
     cf.source_path AS cf_source_path, cf.last_error AS cf_last_error, cf.updated_at AS cf_updated_at
     FROM tunnels t JOIN nodes n ON n.id = t.node_id
     LEFT JOIN tunnel_cloudflare_frontends cf ON cf.node_id = t.node_id AND cf.tunnel_id = t.id
-    WHERE n.public_key IS NOT NULL ${onlineOnly ? "AND n.last_seen_at >= ?" : ""} ${filter ? "AND t.node_id = ?" : ""}
+    WHERE n.public_key IS NOT NULL ${onlineOnly ? "AND n.last_seen_at >= ?" : ""} ${filter ? "AND t.node_id = ?" : ""} ${subscriptionOnly ? "AND n.subscription_enabled = 1" : ""}
     ORDER BY n.name, t.name LIMIT 1000`;
 }
 
@@ -504,8 +524,8 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
   const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
   const cutoff = new Date(Date.now() - offlineSeconds * 1000).toISOString();
   const statement = nodeId
-    ? env.DB.prepare(tunnelQuery(true, true)).bind(cutoff, nodeId)
-    : env.DB.prepare(tunnelQuery(false, true)).bind(cutoff);
+    ? env.DB.prepare(tunnelQuery(true, true, true)).bind(cutoff, nodeId)
+    : env.DB.prepare(tunnelQuery(false, true, true)).bind(cutoff);
   const result = await statement.all<Record<string, unknown>>();
   const preferredAddress = preferredFrontendAddress(env);
   const tunnels = await Promise.all(result.results.map(async (row): Promise<SubscriptionTunnel> => {
@@ -536,7 +556,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
   const [nodesResult, tunnelsResult] = await Promise.all([
     env.DB.prepare(
       `SELECT n.id, n.name, n.labels_json, n.agent_version, n.last_seen_at, n.enrolled_at, n.created_at,
-       n.public_key, COUNT(t.id) AS tunnel_count FROM nodes n LEFT JOIN tunnels t ON t.node_id = n.id
+       n.public_key, n.subscription_enabled, COUNT(t.id) AS tunnel_count FROM nodes n LEFT JOIN tunnels t ON t.node_id = n.id
        GROUP BY n.id ORDER BY n.name, n.created_at LIMIT 1000`,
     ).all<Record<string, unknown>>(),
     env.DB.prepare(tunnelQuery(false, false)).all<Record<string, unknown>>(),
@@ -549,6 +569,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
       id: row.id, name: row.name, labels: JSON.parse(String(row.labels_json)), agentVersion: row.agent_version,
       lastSeenAt: row.last_seen_at, enrolledAt: row.enrolled_at, createdAt: row.created_at,
       tunnelCount: Number(row.tunnel_count), connectionStatus,
+      subscriptionEnabled: Boolean(row.subscription_enabled),
     };
   });
   const tunnels = await Promise.all(tunnelsResult.results.map((row) => tunnelFromRow(row, env)));
@@ -568,6 +589,7 @@ async function route(request: Request, env: Env, ctx?: ExecutionContext): Promis
   if (request.method === "PUT" && cloudflareMatch) return provisionCloudflare(request, env, cloudflareMatch[1], cloudflareMatch[2]);
   if (request.method === "DELETE" && cloudflareMatch) return deprovisionCloudflare(request, env, cloudflareMatch[1], cloudflareMatch[2]);
   const nodeMatch = url.pathname.match(/^\/v1\/admin\/nodes\/([^/]+)$/);
+  if (request.method === "PATCH" && nodeMatch) return updateNodeSubscription(request, env, nodeMatch[1]);
   if (request.method === "DELETE" && nodeMatch) return deleteNode(request, env, nodeMatch[1]);
   if (request.method === "POST" && url.pathname === "/v1/enrollments:exchange") return exchangeEnrollment(request, env);
   if (request.method === "POST" && url.pathname === "/v1/agent/report") return report(request, env, ctx);

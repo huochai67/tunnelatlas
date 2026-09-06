@@ -121,9 +121,14 @@ function renderNodes(nodes) {
   els.nodes.innerHTML = filtered.map((node) => `<div class="agent-item">
     <span class="node-icon">${escapeHtml((node.name || "N").slice(0, 2).toUpperCase())}</span>
     <div class="agent-name"><strong>${escapeHtml(node.name)}</strong><span>${escapeHtml(node.id)}</span></div>
-    <div class="agent-meta"><strong>${node.tunnelCount || 0} 条隧道</strong><span>${node.agentVersion ? `Agent v${escapeHtml(node.agentVersion)}` : "尚未接入"}</span></div>
+    <div class="agent-meta">
+      <strong>${node.tunnelCount || 0} 条隧道</strong>
+      <span>${node.agentVersion ? `Agent v${escapeHtml(node.agentVersion)}` : "尚未接入"}</span>
+      ${state.mode === "admin" ? `<span class="subscription-state${node.subscriptionEnabled ? "" : " is-hidden"}">${node.subscriptionEnabled ? "参与订阅下发" : "已从订阅隐藏"}</span>` : ""}
+    </div>
     <div class="node-controls">
       <span class="agent-state ${escapeAttr(node.connectionStatus)}">${statusText(node.connectionStatus)}</span>
+      ${state.mode === "admin" ? `<button class="subscription-toggle${node.subscriptionEnabled ? "" : " is-hidden"}" type="button" data-node-action="subscription" data-node-id="${escapeAttr(node.id)}">${node.subscriptionEnabled ? "隐藏下发" : "恢复下发"}</button>` : ""}
       ${state.mode === "admin" && node.connectionStatus === "pending" ? `<button type="button" data-node-action="token" data-node-id="${escapeAttr(node.id)}">注册码</button>` : ""}
       ${state.mode === "admin" && node.connectionStatus !== "pending" ? `<button type="button" data-node-action="reset" data-node-id="${escapeAttr(node.id)}">重置</button>` : ""}
       ${state.mode === "admin" ? `<button class="agent-delete" type="button" data-node-action="delete" data-node-id="${escapeAttr(node.id)}">删除</button>` : ""}
@@ -235,10 +240,21 @@ els.nodes.addEventListener("click", async (event) => {
   const node = (state.overview.nodes || []).find((item) => item.id === button.dataset.nodeId);
   if (!node) return;
   const action = button.dataset.nodeAction;
+  if (action === "subscription" && node.subscriptionEnabled && !window.confirm(`确定在订阅下发中隐藏节点“${node.name}”吗？\n\n节点仍会继续上报，可随时恢复。`)) return;
   if (action === "delete" && !window.confirm(`确定删除节点“${node.name}”吗？\n\n该节点的注册码和隧道都会被永久删除。`)) return;
   if (action === "reset" && !window.confirm(`确定重置节点“${node.name}”的接入身份吗？\n\n请先在目标主机卸载旧 Agent；重置后旧身份会立即失效，现有隧道将被清空。`)) return;
   button.disabled = true;
   try {
+    if (action === "subscription") {
+      const nextState = !node.subscriptionEnabled;
+      await api(`/v1/admin/nodes/${encodeURIComponent(node.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ subscriptionEnabled: nextState }),
+      });
+      await refresh({ quiet: true });
+      toast(nextState ? "节点已恢复订阅下发" : "节点已从订阅下发隐藏");
+      return;
+    }
     if (action === "delete") {
       await api(`/v1/admin/nodes/${encodeURIComponent(node.id)}`, { method: "DELETE" });
       els.tokenResult.classList.add("hidden");

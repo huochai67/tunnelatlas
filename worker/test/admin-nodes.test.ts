@@ -234,4 +234,66 @@ describe("admin node management", () => {
     expect(response.status).toBe(401);
     expect(calls).toEqual([]);
   });
+  it("updates subscription visibility for an existing node", async () => {
+    const { env, calls } = testEnv([
+      { id: "node_one", name: "edge", subscription_enabled: 0 },
+      { id: "node_one", name: "edge", subscription_enabled: 1 },
+    ]);
+    const hideResponse = await worker.fetch(adminRequest("/v1/admin/nodes/node_one", "PATCH", { subscriptionEnabled: false }), env);
+    expect(hideResponse.status).toBe(200);
+    expect(await hideResponse.json()).toEqual({
+      node: { id: "node_one", name: "edge", subscriptionEnabled: false },
+    });
+
+    const restoreResponse = await worker.fetch(adminRequest("/v1/admin/nodes/node_one", "PATCH", { subscriptionEnabled: true }), env);
+    expect(restoreResponse.status).toBe(200);
+    expect(await restoreResponse.json()).toEqual({
+      node: { id: "node_one", name: "edge", subscriptionEnabled: true },
+    });
+
+    const patchCalls = calls.filter((call) => call.sql.includes("UPDATE nodes SET subscription_enabled"));
+    expect(patchCalls).toHaveLength(2);
+    expect(patchCalls[0].values).toEqual([0, "node_one"]);
+    expect(patchCalls[1].values).toEqual([1, "node_one"]);
+  });
+
+  it("rejects non-boolean subscriptionEnabled payloads", async () => {
+    const { env, calls } = testEnv();
+    const invalidValues = ["true", 1, null, undefined, {}, []];
+    for (const value of invalidValues) {
+      const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_one", "PATCH", { subscriptionEnabled: value }), env);
+      expect(response.status).toBe(400);
+      const body = await response.json() as Record<string, any>;
+      expect(body.title).toBe("Invalid subscriptionEnabled");
+    }
+    const nullBodyResponse = await worker.fetch(adminRequest("/v1/admin/nodes/node_one", "PATCH", null), env);
+    expect(nullBodyResponse.status).toBe(400);
+    expect((await nullBodyResponse.json() as Record<string, any>).title).toBe("Invalid subscriptionEnabled");
+
+    const arrayBodyResponse = await worker.fetch(adminRequest("/v1/admin/nodes/node_one", "PATCH", []), env);
+    expect(arrayBodyResponse.status).toBe(400);
+    expect((await arrayBodyResponse.json() as Record<string, any>).title).toBe("Invalid subscriptionEnabled");
+
+    expect(calls).toEqual([]);
+  });
+
+  it("returns 404 when updating a missing node", async () => {
+    const { env, calls } = testEnv([null]);
+    const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_missing", "PATCH", { subscriptionEnabled: false }), env);
+    expect(response.status).toBe(404);
+    expect((await response.json() as Record<string, any>).title).toBe("Node not found");
+    expect(calls.some((call) => call.sql.includes("UPDATE nodes SET subscription_enabled"))).toBe(true);
+  });
+
+  it("requires ADMIN_TOKEN before updating node subscription visibility", async () => {
+    const { env, calls } = testEnv();
+    const response = await worker.fetch(new Request("https://atlas.example/v1/admin/nodes/node_one", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subscriptionEnabled: false }),
+    }), env);
+
+    expect(response.status).toBe(401);
+    expect(calls).toEqual([]);
+  });
 });

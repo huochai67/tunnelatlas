@@ -280,4 +280,86 @@ describe("node subscription", () => {
     ));
     expect(node.add).toBe("ta-0123456789abcdef0123.example.com");
   });
+  it("excludes nodes with subscription disabled from subscription endpoints while keeping them in tunnels discovery", async () => {
+    const key = bytesToBase64Url(new Uint8Array(32).fill(7));
+    const visibleRow: Record<string, unknown> = {
+      id: "inbound-visible", node_id: "node_visible", name: "public", kind: "sing-box/inbound",
+      endpoint: "203.0.113.8:10086", protocol: "vmess", status: "healthy",
+      metadata_json: JSON.stringify({ transport: { type: "ws", path: "/vmess" } }),
+      authentication_ciphertext: await encryptJson({ users: [{ uuid: "vmess-uuid-visible" }] }, key, "node_visible:inbound-visible"),
+      last_seen_at: new Date().toISOString(),
+      node_name: "node-visible",
+      cf_hostname: null, cf_status: null, cf_source_endpoint: null, cf_source_path: null, cf_last_error: null, cf_updated_at: null,
+      subscription_enabled: 1,
+    };
+    const hiddenRow: Record<string, unknown> = {
+      id: "inbound-hidden", node_id: "node_hidden", name: "public", kind: "sing-box/inbound",
+      endpoint: "203.0.113.9:10086", protocol: "vmess", status: "healthy",
+      metadata_json: JSON.stringify({ transport: { type: "ws", path: "/vmess" } }),
+      authentication_ciphertext: await encryptJson({ users: [{ uuid: "vmess-uuid-hidden" }] }, key, "node_hidden:inbound-hidden"),
+      last_seen_at: new Date().toISOString(),
+      node_name: "node-hidden",
+      cf_hostname: null, cf_status: null, cf_source_endpoint: null, cf_source_path: null, cf_last_error: null, cf_updated_at: null,
+      subscription_enabled: 0,
+    };
+    const allRows = [visibleRow, hiddenRow];
+    const db = {
+      prepare: (sql: string) => {
+        let boundValues: unknown[] = [];
+        const statement = {
+          bind: (...values: unknown[]) => {
+            boundValues = values;
+            return statement;
+          },
+          all: async () => {
+            let results = [...allRows];
+            if (sql.includes("n.subscription_enabled = 1")) {
+              results = results.filter((row) => row.subscription_enabled === 1);
+            }
+            if (sql.includes("t.node_id = ?")) {
+              const filterNodeId = boundValues[1];
+              results = results.filter((row) => row.node_id === filterNodeId);
+            }
+            return { results };
+          },
+        };
+        return statement;
+      },
+    } as unknown as D1Database;
+    const env = {
+      ADMIN_TOKEN: "admin-token",
+      READ_TOKEN: "read-token",
+      ENROLLMENT_PEPPER: "pepper",
+      CREDENTIALS_KEY: key,
+      DB: db,
+    } as unknown as Env;
+
+    const subResponse = await worker.fetch(new Request("https://atlas.example/v1/subscription", {
+      headers: { Authorization: "Bearer read-token" },
+    }), env);
+    expect(subResponse.status).toBe(200);
+    const subBody = await subResponse.text();
+    const subText = new TextDecoder().decode(Uint8Array.from(atob(subBody), (char) => char.charCodeAt(0))).trim();
+    const subUris = subText.split("\n").filter(Boolean);
+    expect(subUris).toHaveLength(1);
+    expect(decodeVmess(subUris[0]).ps).toContain("node-visible");
+
+    const hiddenSubResponse = await worker.fetch(new Request("https://atlas.example/v1/subscription?nodeId=node_hidden", {
+      headers: { Authorization: "Bearer read-token" },
+    }), env);
+    expect(hiddenSubResponse.status).toBe(200);
+    const hiddenSubBody = await hiddenSubResponse.text();
+    const hiddenSubText = atob(hiddenSubBody).trim();
+    expect(hiddenSubText).toBe("");
+
+    const tunnelsResponse = await worker.fetch(new Request("https://atlas.example/v1/tunnels", {
+      headers: { Authorization: "Bearer read-token" },
+    }), env);
+    expect(tunnelsResponse.status).toBe(200);
+    const tunnelsBody = await tunnelsResponse.json() as { tunnels: Array<{ nodeId: string }> };
+    expect(tunnelsBody.tunnels).toHaveLength(2);
+    const nodeIds = tunnelsBody.tunnels.map((t) => t.nodeId);
+    expect(nodeIds).toContain("node_visible");
+    expect(nodeIds).toContain("node_hidden");
+  });
 });
