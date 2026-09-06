@@ -261,11 +261,14 @@ fn tls_metadata(server_name: &str, insecure: bool, alpn: Option<Vec<&str>>) -> V
 fn reality_metadata(server_name: &str, public_key: &str, short_id: &str) -> Value {
     json!({
         "direction": "inbound",
-        "reality": {
+        "tls": {
             "enabled": true,
             "serverName": server_name,
-            "publicKey": public_key,
-            "shortId": short_id
+            "reality": {
+                "enabled": true,
+                "publicKey": public_key,
+                "shortId": short_id
+            }
         }
     })
 }
@@ -373,6 +376,22 @@ mod tests {
         // Reality private key must not leak to authentication
         assert!(vless_tunnel.authentication.get("private_key").is_none());
         assert!(vless_tunnel.authentication.get("privateKey").is_none());
+        assert_eq!(vless_tunnel.metadata["tls"]["enabled"], true);
+        assert_eq!(
+            vless_tunnel.metadata["tls"]["serverName"],
+            "addons.mozilla.org"
+        );
+        assert_eq!(vless_tunnel.metadata["tls"]["reality"]["enabled"], true);
+        assert!(
+            vless_tunnel.metadata["tls"]["reality"]["publicKey"]
+                .as_str()
+                .is_some()
+        );
+        assert!(
+            vless_tunnel.metadata["tls"]["reality"]["shortId"]
+                .as_str()
+                .is_some()
+        );
 
         // SS endpoint should use observedAddress (203.0.113.8) since public_host is None
         let ss_tunnel = rendered.tunnels.iter().find(|t| t.id == "t_ss").unwrap();

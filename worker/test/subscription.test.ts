@@ -38,9 +38,29 @@ describe("node subscription", () => {
     const uris = subscriptionUris(tunnels);
     expect(uris).toHaveLength(2);
     expect(uris[0]).toMatch(/^ss:\/\/[A-Za-z0-9_-]+@proxy\.example\.com:8388#/);
-    expect(uris[1]).toBe("vless://client-uuid@[2001:db8::1]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=reality-public-key&sid=0123456789abcdef#edge-01%2Fvless%2Falice");
+    expect(uris[1]).toBe("vless://client-uuid@[2001:db8::1]:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=addons.mozilla.org&fp=chrome&pbk=reality-public-key&sid=0123456789abcdef&type=tcp&headerType=none#edge-01%2Fvless%2Falice");
     expect(new TextDecoder().decode(Uint8Array.from(atob(encodeSubscription(tunnels)), (character) => character.charCodeAt(0))))
       .toBe(uris.join("\n"));
+  });
+
+  it("supports vless reality with direct metadata.reality and includes tcp and headerType", () => {
+    const tunnels = [
+      tunnel({
+        authentication: { users: [{ name: "alice", uuid: "client-uuid", flow: "xtls-rprx-vision" }] },
+        endpoint: "203.0.113.8:443",
+        metadata: {
+          direction: "inbound",
+          reality: { enabled: true, serverName: "www.bing.com", publicKey: "reality-pbk", shortId: "621c2a66066a56fc" },
+        },
+        name: "reality",
+        protocol: "vless",
+      }),
+    ];
+    const uris = subscriptionUris(tunnels);
+    expect(uris).toHaveLength(1);
+    expect(uris[0]).toBe(
+      "vless://client-uuid@203.0.113.8:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=reality-pbk&sid=621c2a66066a56fc&type=tcp&headerType=none#edge-01%2Freality%2Falice",
+    );
   });
 
   it("omits unhealthy, unsupported, and incomplete nodes", () => {

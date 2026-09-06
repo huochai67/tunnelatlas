@@ -131,7 +131,7 @@ function tunnelUris(tunnel: SubscriptionTunnel): string[] {
   const authentication = record(tunnel.authentication);
   const metadata = record(tunnel.metadata);
   const tls = record(metadata.tls);
-  const reality = record(tls.reality);
+  const reality = record(tls.reality ?? metadata.reality);
   switch (tunnel.protocol.toLowerCase()) {
     case "shadowsocks":
       return shadowsocksUris(tunnel, endpoint, authentication);
@@ -141,7 +141,7 @@ function tunnelUris(tunnel: SubscriptionTunnel): string[] {
         const flow = text(user.flow);
         if (flow) parameters.set("flow", flow);
         if (reality.enabled === true) {
-          const serverName = text(tls.serverName);
+          const serverName = text(tls.serverName ?? metadata.serverName ?? record(reality).serverName);
           const publicKey = text(reality.publicKey);
           const shortId = text(reality.shortId);
           if (!serverName || !publicKey || !shortId) return null;
@@ -150,6 +150,8 @@ function tunnelUris(tunnel: SubscriptionTunnel): string[] {
           parameters.set("fp", "chrome");
           parameters.set("pbk", publicKey);
           parameters.set("sid", shortId);
+          parameters.set("type", "tcp");
+          parameters.set("headerType", "none");
         }
         return `?${parameters}`;
       });
@@ -182,7 +184,7 @@ function tunnelUris(tunnel: SubscriptionTunnel): string[] {
       }, () => {
         const parameters = new URLSearchParams();
         if (reality.enabled === true) {
-          const serverName = text(tls.serverName);
+          const serverName = text(tls.serverName ?? metadata.serverName ?? record(reality).serverName);
           const publicKey = text(reality.publicKey);
           const shortId = text(reality.shortId);
           if (!serverName || !publicKey || !shortId) return null;
