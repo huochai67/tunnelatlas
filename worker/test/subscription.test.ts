@@ -280,25 +280,25 @@ describe("node subscription", () => {
     ));
     expect(node.add).toBe("ta-0123456789abcdef0123.example.com");
   });
-  it("excludes nodes with subscription disabled from subscription endpoints while keeping them in tunnels discovery", async () => {
+  it("excludes tunnels with subscription disabled from subscription endpoints while keeping them in tunnels discovery", async () => {
     const key = bytesToBase64Url(new Uint8Array(32).fill(7));
     const visibleRow: Record<string, unknown> = {
-      id: "inbound-visible", node_id: "node_visible", name: "public", kind: "sing-box/inbound",
+      id: "inbound-visible", node_id: "node_one", name: "public-visible", kind: "sing-box/inbound",
       endpoint: "203.0.113.8:10086", protocol: "vmess", status: "healthy",
-      metadata_json: JSON.stringify({ transport: { type: "ws", path: "/vmess" } }),
-      authentication_ciphertext: await encryptJson({ users: [{ uuid: "vmess-uuid-visible" }] }, key, "node_visible:inbound-visible"),
+      metadata_json: JSON.stringify({ transport: { type: "ws", path: "/vmess-visible" } }),
+      authentication_ciphertext: await encryptJson({ users: [{ uuid: "vmess-uuid-visible" }] }, key, "node_one:inbound-visible"),
       last_seen_at: new Date().toISOString(),
-      node_name: "node-visible",
+      node_name: "edge-01",
       cf_hostname: null, cf_status: null, cf_source_endpoint: null, cf_source_path: null, cf_last_error: null, cf_updated_at: null,
       subscription_enabled: 1,
     };
     const hiddenRow: Record<string, unknown> = {
-      id: "inbound-hidden", node_id: "node_hidden", name: "public", kind: "sing-box/inbound",
-      endpoint: "203.0.113.9:10086", protocol: "vmess", status: "healthy",
-      metadata_json: JSON.stringify({ transport: { type: "ws", path: "/vmess" } }),
-      authentication_ciphertext: await encryptJson({ users: [{ uuid: "vmess-uuid-hidden" }] }, key, "node_hidden:inbound-hidden"),
+      id: "inbound-hidden", node_id: "node_one", name: "public-hidden", kind: "sing-box/inbound",
+      endpoint: "203.0.113.8:10087", protocol: "vmess", status: "healthy",
+      metadata_json: JSON.stringify({ transport: { type: "ws", path: "/vmess-hidden" } }),
+      authentication_ciphertext: await encryptJson({ users: [{ uuid: "vmess-uuid-hidden" }] }, key, "node_one:inbound-hidden"),
       last_seen_at: new Date().toISOString(),
-      node_name: "node-hidden",
+      node_name: "edge-01",
       cf_hostname: null, cf_status: null, cf_source_endpoint: null, cf_source_path: null, cf_last_error: null, cf_updated_at: null,
       subscription_enabled: 0,
     };
@@ -313,7 +313,7 @@ describe("node subscription", () => {
           },
           all: async () => {
             let results = [...allRows];
-            if (sql.includes("n.subscription_enabled = 1")) {
+            if (sql.includes("t.subscription_enabled = 1")) {
               results = results.filter((row) => row.subscription_enabled === 1);
             }
             if (sql.includes("t.node_id = ?")) {
@@ -342,24 +342,26 @@ describe("node subscription", () => {
     const subText = new TextDecoder().decode(Uint8Array.from(atob(subBody), (char) => char.charCodeAt(0))).trim();
     const subUris = subText.split("\n").filter(Boolean);
     expect(subUris).toHaveLength(1);
-    expect(decodeVmess(subUris[0]).ps).toContain("node-visible");
+    expect(decodeVmess(subUris[0]).ps).toContain("public-visible");
+    expect(decodeVmess(subUris[0]).ps).not.toContain("public-hidden");
 
-    const hiddenSubResponse = await worker.fetch(new Request("https://atlas.example/v1/subscription?nodeId=node_hidden", {
+    const nodeSubResponse = await worker.fetch(new Request("https://atlas.example/v1/subscription?nodeId=node_one", {
       headers: { Authorization: "Bearer read-token" },
     }), env);
-    expect(hiddenSubResponse.status).toBe(200);
-    const hiddenSubBody = await hiddenSubResponse.text();
-    const hiddenSubText = atob(hiddenSubBody).trim();
-    expect(hiddenSubText).toBe("");
+    expect(nodeSubResponse.status).toBe(200);
+    const nodeSubBody = await nodeSubResponse.text();
+    const nodeSubText = new TextDecoder().decode(Uint8Array.from(atob(nodeSubBody), (char) => char.charCodeAt(0))).trim();
+    const nodeSubUris = nodeSubText.split("\n").filter(Boolean);
+    expect(nodeSubUris).toHaveLength(1);
+    expect(decodeVmess(nodeSubUris[0]).ps).toContain("public-visible");
 
     const tunnelsResponse = await worker.fetch(new Request("https://atlas.example/v1/tunnels", {
       headers: { Authorization: "Bearer read-token" },
     }), env);
     expect(tunnelsResponse.status).toBe(200);
-    const tunnelsBody = await tunnelsResponse.json() as { tunnels: Array<{ nodeId: string }> };
+    const tunnelsBody = await tunnelsResponse.json() as { tunnels: Array<{ id: string; subscriptionEnabled: boolean }> };
     expect(tunnelsBody.tunnels).toHaveLength(2);
-    const nodeIds = tunnelsBody.tunnels.map((t) => t.nodeId);
-    expect(nodeIds).toContain("node_visible");
-    expect(nodeIds).toContain("node_hidden");
+    expect(tunnelsBody.tunnels.find((t) => t.id === "inbound-visible")?.subscriptionEnabled).toBe(true);
+    expect(tunnelsBody.tunnels.find((t) => t.id === "inbound-hidden")?.subscriptionEnabled).toBe(false);
   });
 });

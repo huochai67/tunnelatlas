@@ -121,14 +121,9 @@ function renderNodes(nodes) {
   els.nodes.innerHTML = filtered.map((node) => `<div class="agent-item">
     <span class="node-icon">${escapeHtml((node.name || "N").slice(0, 2).toUpperCase())}</span>
     <div class="agent-name"><strong>${escapeHtml(node.name)}</strong><span>${escapeHtml(node.id)}</span></div>
-    <div class="agent-meta">
-      <strong>${node.tunnelCount || 0} 条隧道</strong>
-      <span>${node.agentVersion ? `Agent v${escapeHtml(node.agentVersion)}` : "尚未接入"}</span>
-      ${state.mode === "admin" ? `<span class="subscription-state${node.subscriptionEnabled ? "" : " is-hidden"}">${node.subscriptionEnabled ? "参与订阅下发" : "已从订阅隐藏"}</span>` : ""}
-    </div>
+    <div class="agent-meta"><strong>${node.tunnelCount || 0} 条隧道</strong><span>${node.agentVersion ? `Agent v${escapeHtml(node.agentVersion)}` : "尚未接入"}</span></div>
     <div class="node-controls">
       <span class="agent-state ${escapeAttr(node.connectionStatus)}">${statusText(node.connectionStatus)}</span>
-      ${state.mode === "admin" ? `<button class="subscription-toggle${node.subscriptionEnabled ? "" : " is-hidden"}" type="button" data-node-action="subscription" data-node-id="${escapeAttr(node.id)}">${node.subscriptionEnabled ? "隐藏下发" : "恢复下发"}</button>` : ""}
       ${state.mode === "admin" && node.connectionStatus === "pending" ? `<button type="button" data-node-action="token" data-node-id="${escapeAttr(node.id)}">注册码</button>` : ""}
       ${state.mode === "admin" && node.connectionStatus !== "pending" ? `<button type="button" data-node-action="reset" data-node-id="${escapeAttr(node.id)}">重置</button>` : ""}
       ${state.mode === "admin" ? `<button class="agent-delete" type="button" data-node-action="delete" data-node-id="${escapeAttr(node.id)}">删除</button>` : ""}
@@ -164,13 +159,21 @@ function cloudflareCell(tunnel) {
   return `<div class="cf-cell">${host}${chip}<span class="cf-actions">${actions}${disable}</span>${error}</div>`;
 }
 
+function subscriptionCell(tunnel) {
+  const isHidden = !tunnel.subscriptionEnabled;
+  const chip = `<span class="sub-status${isHidden ? " is-hidden" : ""}">${isHidden ? "已从订阅隐藏" : "参与订阅下发"}</span>`;
+  if (state.mode !== "admin") return chip;
+  const button = `<button class="sub-toggle${isHidden ? " is-hidden" : ""}" type="button" data-tunnel-action="subscription" data-node-id="${escapeAttr(tunnel.nodeId)}" data-tunnel-id="${escapeAttr(tunnel.id)}">${isHidden ? "恢复下发" : "隐藏下发"}</button>`;
+  return `<div class="sub-cell">${chip}${button}</div>`;
+}
+
 function renderTunnels(tunnels) {
   const query = els.search.value.trim().toLowerCase();
   const nodeId = els.nodeFilter.value;
   const filtered = tunnels.filter((tunnel) => (nodeId === "all" || tunnel.nodeId === nodeId)
     && (!query || [tunnel.name, tunnel.endpoint, tunnel.protocol, tunnel.nodeName].join(" ").toLowerCase().includes(query)));
   if (!filtered.length) {
-    els.tunnels.innerHTML = `<tr><td colspan="7" class="table-empty">没有符合条件的隧道</td></tr>`;
+    els.tunnels.innerHTML = `<tr><td colspan="8" class="table-empty">没有符合条件的隧道</td></tr>`;
     return;
   }
   els.tunnels.innerHTML = filtered.map((tunnel) => `<tr>
@@ -178,6 +181,7 @@ function renderTunnels(tunnels) {
     <td class="tunnel-name"><strong>${escapeHtml(tunnel.name)}</strong><small>${escapeHtml(tunnel.nodeName)}</small></td>
     <td>${escapeHtml(tunnel.metadata?.direction || tunnel.kind.split("/").pop())} / ${escapeHtml(tunnel.protocol)}</td>
     <td class="endpoint">${escapeHtml(tunnel.endpoint)}</td><td>${escapeHtml(tunnel.nodeName)}</td>
+    <td class="sub-column">${subscriptionCell(tunnel)}</td>
     <td class="cf-column">${cloudflareCell(tunnel)}</td>
     <td>${relativeTime(tunnel.lastSeenAt)}</td></tr>`).join("");
 }
@@ -240,21 +244,10 @@ els.nodes.addEventListener("click", async (event) => {
   const node = (state.overview.nodes || []).find((item) => item.id === button.dataset.nodeId);
   if (!node) return;
   const action = button.dataset.nodeAction;
-  if (action === "subscription" && node.subscriptionEnabled && !window.confirm(`确定在订阅下发中隐藏节点“${node.name}”吗？\n\n节点仍会继续上报，可随时恢复。`)) return;
   if (action === "delete" && !window.confirm(`确定删除节点“${node.name}”吗？\n\n该节点的注册码和隧道都会被永久删除。`)) return;
   if (action === "reset" && !window.confirm(`确定重置节点“${node.name}”的接入身份吗？\n\n请先在目标主机卸载旧 Agent；重置后旧身份会立即失效，现有隧道将被清空。`)) return;
   button.disabled = true;
   try {
-    if (action === "subscription") {
-      const nextState = !node.subscriptionEnabled;
-      await api(`/v1/admin/nodes/${encodeURIComponent(node.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ subscriptionEnabled: nextState }),
-      });
-      await refresh({ quiet: true });
-      toast(nextState ? "节点已恢复订阅下发" : "节点已从订阅下发隐藏");
-      return;
-    }
     if (action === "delete") {
       await api(`/v1/admin/nodes/${encodeURIComponent(node.id)}`, { method: "DELETE" });
       els.tokenResult.classList.add("hidden");
@@ -273,19 +266,41 @@ els.nodes.addEventListener("click", async (event) => {
 });
 els.deployPublicHost.addEventListener("input", updateDeploymentCommand);
 els.tunnels.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-cf-action]");
-  if (!button || state.mode !== "admin") return;
-  const { nodeId, tunnelId } = button.dataset;
-  const action = button.dataset.cfAction;
-  if (action === "disable" && !window.confirm("确定停用该隧道的 Cloudflare 前端吗？\n\n将删除代理 DNS 记录和两条规则，订阅会立即回退到直连地址。")) return;
-  button.disabled = true;
-  try {
-    const path = `/v1/admin/nodes/${encodeURIComponent(nodeId)}/tunnels/${encodeURIComponent(tunnelId)}/cloudflare`;
-    if (action === "disable") await api(path, { method: "DELETE" });
-    else await api(path, { method: "PUT" });
-    await refresh({ quiet: true });
-    toast(action === "disable" ? "Cloudflare 前端已停用" : "Cloudflare 前端已同步");
-  } catch (error) { button.disabled = false; toast(error.message); }
+  const cfButton = event.target.closest("button[data-cf-action]");
+  if (cfButton && state.mode === "admin") {
+    const { nodeId, tunnelId } = cfButton.dataset;
+    const action = cfButton.dataset.cfAction;
+    if (action === "disable" && !window.confirm("确定停用该隧道的 Cloudflare 前端吗？\n\n将删除代理 DNS记录和两条规则，订阅会立即回退到直连地址。")) return;
+    cfButton.disabled = true;
+    try {
+      const path = `/v1/admin/nodes/${encodeURIComponent(nodeId)}/tunnels/${encodeURIComponent(tunnelId)}/cloudflare`;
+      if (action === "disable") await api(path, { method: "DELETE" });
+      else await api(path, { method: "PUT" });
+      await refresh({ quiet: true });
+      toast(action === "disable" ? "Cloudflare 前端已停用" : "Cloudflare 前端已同步");
+    } catch (error) { cfButton.disabled = false; toast(error.message); }
+    return;
+  }
+  const subButton = event.target.closest("button[data-tunnel-action]");
+  if (subButton && state.mode === "admin") {
+    const { nodeId, tunnelId } = subButton.dataset;
+    const action = subButton.dataset.tunnelAction;
+    if (action === "subscription") {
+      const tunnel = (state.overview.tunnels || []).find((item) => item.nodeId === nodeId && item.id === tunnelId);
+      if (!tunnel) return;
+      if (tunnel.subscriptionEnabled && !window.confirm(`确定在订阅下发中隐藏隧道“${tunnel.name}”吗？\n\n节点仍会继续上报，可随时恢复。`)) return;
+      subButton.disabled = true;
+      try {
+        const nextState = !tunnel.subscriptionEnabled;
+        await api(`/v1/admin/nodes/${encodeURIComponent(nodeId)}/tunnels/${encodeURIComponent(tunnelId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ subscriptionEnabled: nextState }),
+        });
+        await refresh({ quiet: true });
+        toast(nextState ? "隧道已恢复订阅下发" : "隧道已从订阅下发隐藏");
+      } catch (error) { subButton.disabled = false; toast(error.message); }
+    }
+  }
 });
 $("#copy-token").addEventListener("click", async () => { await navigator.clipboard.writeText(els.tokenValue.textContent); toast("注册码已复制"); });
 els.copyDeployCommand.addEventListener("click", async () => { await navigator.clipboard.writeText(els.deployCommand.textContent); toast("一键部署命令已复制"); });
