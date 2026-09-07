@@ -182,7 +182,11 @@ fn render_hop_outbound(hop: &DesiredHop) -> Result<Value> {
                 "type": "ws",
                 "path": hop.transport.as_ref().and_then(|value| value.path.as_deref()).unwrap_or("/vmess"),
             });
-            if let Some(host) = hop.transport.as_ref().and_then(|value| value.host.as_deref()) {
+            if let Some(host) = hop
+                .transport
+                .as_ref()
+                .and_then(|value| value.host.as_deref())
+            {
                 transport["headers"] = json!({ "Host": host });
             }
             let mut extra = json!({
@@ -206,7 +210,11 @@ fn hop_tls(hop: &DesiredHop, h3: bool) -> Value {
     let tls = hop.tls.as_ref();
     let server_name = tls
         .and_then(|value| value.server_name.as_deref())
-        .or_else(|| hop.transport.as_ref().and_then(|value| value.host.as_deref()))
+        .or_else(|| {
+            hop.transport
+                .as_ref()
+                .and_then(|value| value.host.as_deref())
+        })
         .unwrap_or(hop.server.as_deref().unwrap_or_default());
     let mut document = json!({
         "enabled": true,
@@ -214,7 +222,10 @@ fn hop_tls(hop: &DesiredHop, h3: bool) -> Value {
         "insecure": tls.and_then(|value| value.insecure).unwrap_or(false),
     });
     if h3 {
-        document["alpn"] = json!(tls.and_then(|value| value.alpn.clone()).unwrap_or_else(|| vec!["h3".to_owned()]));
+        document["alpn"] = json!(
+            tls.and_then(|value| value.alpn.clone())
+                .unwrap_or_else(|| vec!["h3".to_owned()])
+        );
     }
     if let Some(reality) = tls.and_then(|value| value.reality.as_ref()) {
         document["insecure"] = json!(false);
@@ -632,8 +643,14 @@ mod tests {
         }];
         let mut secrets = SecretStore::default();
         secrets.reconcile_desired(&tunnels, &certs_dir).unwrap();
-        let rendered = render_desired(&tunnels, &secrets, &certs_dir, Some("203.0.113.8"), "healthy")
-            .unwrap();
+        let rendered = render_desired(
+            &tunnels,
+            &secrets,
+            &certs_dir,
+            Some("203.0.113.8"),
+            "healthy",
+        )
+        .unwrap();
         let document: Value = serde_json::from_slice(&rendered.bytes).unwrap();
         let outbounds = document["outbounds"].as_array().unwrap();
         assert_eq!(outbounds[0]["tag"], "direct");

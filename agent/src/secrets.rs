@@ -14,7 +14,10 @@ use rand::{RngCore, rngs::OsRng};
 use rcgen::generate_simple_self_signed;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::write_private_atomic, desired::{DesiredTunnel, TunnelCredentials}};
+use crate::{
+    config::write_private_atomic,
+    desired::{DesiredTunnel, TunnelCredentials},
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -161,7 +164,10 @@ impl ProtocolSecret {
         }
     }
 
-    pub fn from_credentials(tunnel: &DesiredTunnel, credentials: &TunnelCredentials) -> Result<Self> {
+    pub fn from_credentials(
+        tunnel: &DesiredTunnel,
+        credentials: &TunnelCredentials,
+    ) -> Result<Self> {
         match tunnel {
             DesiredTunnel::Shadowsocks { .. } => Ok(Self::Shadowsocks {
                 password: credentials

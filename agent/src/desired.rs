@@ -143,7 +143,9 @@ fn hop_ready() -> String {
 
 impl DesiredHop {
     pub fn is_ready(&self) -> bool {
-        self.status == "ready" && self.server.as_deref().is_some_and(|s| !s.is_empty()) && self.port.is_some()
+        self.status == "ready"
+            && self.server.as_deref().is_some_and(|s| !s.is_empty())
+            && self.port.is_some()
     }
 }
 
@@ -505,7 +507,10 @@ impl DesiredTunnel {
                 }
             }
             Self::Tuic { .. } => {
-                if credentials.uuid.as_deref().is_none_or(|value| value.is_empty())
+                if credentials
+                    .uuid
+                    .as_deref()
+                    .is_none_or(|value| value.is_empty())
                     || credentials
                         .password
                         .as_deref()
@@ -515,7 +520,10 @@ impl DesiredTunnel {
                 }
             }
             Self::VlessReality { .. } => {
-                if credentials.uuid.as_deref().is_none_or(|value| value.is_empty())
+                if credentials
+                    .uuid
+                    .as_deref()
+                    .is_none_or(|value| value.is_empty())
                     || credentials
                         .private_key
                         .as_deref()
@@ -550,11 +558,18 @@ impl DesiredTunnel {
                         .as_deref()
                         .is_none_or(|value| value.is_empty())
                 {
-                    bail!("missing anytls reality credentials for tunnel {}", self.id());
+                    bail!(
+                        "missing anytls reality credentials for tunnel {}",
+                        self.id()
+                    );
                 }
             }
             Self::VmessWs { .. } => {
-                if credentials.uuid.as_deref().is_none_or(|value| value.is_empty()) {
+                if credentials
+                    .uuid
+                    .as_deref()
+                    .is_none_or(|value| value.is_empty())
+                {
                     bail!("missing vmess uuid for tunnel {}", self.id());
                 }
             }
