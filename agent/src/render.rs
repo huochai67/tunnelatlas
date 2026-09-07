@@ -41,6 +41,7 @@ pub fn render_desired(
                 tunnel_status = "degraded".to_owned();
                 route_rules.push(json!({
                     "inbound": [tunnel.name()],
+                    "action": "route",
                     "outbound": "block"
                 }));
             } else {
@@ -56,6 +57,7 @@ pub fn render_desired(
                 if let Some(last) = hops.last() {
                     route_rules.push(json!({
                         "inbound": [tunnel.name()],
+                        "action": "route",
                         "outbound": last.tag
                     }));
                 }
@@ -163,6 +165,8 @@ fn render_hop_outbound(hop: &DesiredHop) -> Result<Value> {
                     "type": "vless",
                     "uuid": hop.uuid.as_deref().unwrap_or_default(),
                     "flow": hop.flow.as_deref().unwrap_or("xtls-rprx-vision"),
+                    "network": "tcp",
+                    "packet_encoding": "xudp",
                     "tls": hop_tls(hop, false),
                 }),
             );
@@ -229,6 +233,10 @@ fn hop_tls(hop: &DesiredHop, h3: bool) -> Value {
     }
     if let Some(reality) = tls.and_then(|value| value.reality.as_ref()) {
         document["insecure"] = json!(false);
+        document["utls"] = json!({
+            "enabled": true,
+            "fingerprint": "chrome"
+        });
         document["reality"] = json!({
             "enabled": true,
             "public_key": reality.public_key,
@@ -656,9 +664,104 @@ mod tests {
         assert_eq!(outbounds[0]["tag"], "direct");
         assert_eq!(outbounds[1]["tag"], "hop-t_ss-t_mid");
         assert!(outbounds[1].get("detour").is_none());
-        assert_eq!(outbounds[2]["tag"], "hop-t_ss-t_exit");
         assert_eq!(outbounds[2]["detour"], "hop-t_ss-t_mid");
+        assert_eq!(outbounds[2]["tls"]["utls"]["enabled"], true);
+        assert_eq!(outbounds[2]["tls"]["utls"]["fingerprint"], "chrome");
         assert_eq!(document["route"]["rules"][0]["outbound"], "hop-t_ss-t_exit");
         assert_eq!(rendered.tunnels[0].status, "healthy");
+    }
+
+    #[test]
+    fn deserializes_worker_anytls_hop_payload_and_passes_sing_box_check() {
+        let raw = r#"{
+            "version": 7,
+            "tunnels": [
+                {
+                    "id": "tunnel_entry",
+                    "name": "relay-lax",
+                    "type": "anytls-reality",
+                    "listen": "::",
+                    "port": 19992,
+                    "publicHost": null,
+                    "credentialGeneration": 1,
+                    "serverName": "www.bing.com",
+                    "credentials": {
+                        "password": "passwordpasswordpasswordpasswor",
+                        "privateKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        "shortId": "0123456789abcdef",
+                        "name": "tunnelatlas"
+                    },
+                    "hops": [
+                        {
+                            "nodeId": "node_exit",
+                            "tunnelId": "tunnel_exit",
+                            "tag": "hop-tunnel_entry-tunnel_exit",
+                            "status": "ready",
+                            "server": "198.51.100.8",
+                            "port": 42831,
+                            "type": "vless-reality",
+                            "uuid": "e57c13b5-3954-40d2-94b8-62c259bf549a",
+                            "flow": "xtls-rprx-vision",
+                            "tls": {
+                                "serverName": "www.bing.com",
+                                "reality": {
+                                    "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                    "shortId": "0123456789abcdef"
+                                }
+                            }
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        let desired: crate::desired::DesiredConfig = serde_json::from_str(raw).unwrap();
+        desired.validate().unwrap();
+        assert_eq!(desired.tunnels[0].hops().len(), 1);
+        assert!(desired.tunnels[0].hops()[0].is_ready());
+
+        let temp = tempfile::tempdir().unwrap();
+        let certs_dir = temp.path().join("certs");
+        let mut secrets = SecretStore::default();
+        secrets
+            .reconcile_desired(&desired.tunnels, &certs_dir)
+            .unwrap();
+        let rendered = render_desired(
+            &desired.tunnels,
+            &secrets,
+            &certs_dir,
+            Some("203.0.113.8"),
+            "healthy",
+        )
+        .unwrap();
+        let document: Value = serde_json::from_slice(&rendered.bytes).unwrap();
+        assert_eq!(document["inbounds"][0]["tag"], "relay-lax");
+        assert_eq!(
+            document["route"]["rules"][0]["outbound"],
+            "hop-tunnel_entry-tunnel_exit"
+        );
+        assert_eq!(
+            document["outbounds"][1]["tls"]["utls"]["fingerprint"],
+            "chrome"
+        );
+
+        let config_path = temp.path().join("sing-box.json");
+        std::fs::write(&config_path, &rendered.bytes).unwrap();
+        if std::process::Command::new("sing-box")
+            .arg("version")
+            .output()
+            .is_ok()
+        {
+            let check = std::process::Command::new("sing-box")
+                .args(["check", "-c"])
+                .arg(&config_path)
+                .output()
+                .unwrap();
+            assert!(
+                check.status.success(),
+                "sing-box check failed: {}",
+                String::from_utf8_lossy(&check.stderr)
+            );
+        }
     }
 }
