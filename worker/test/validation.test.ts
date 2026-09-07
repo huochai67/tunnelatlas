@@ -95,6 +95,7 @@ describe("tunnel config input validation and normalization", () => {
       publicHost: null,
       options: { method: "2022-blake3-aes-128-gcm" },
       hops: [],
+      subscriptionName: null,
     });
   });
 
@@ -179,6 +180,27 @@ describe("tunnel config input validation and normalization", () => {
     })).toThrow("Invalid hops");
   });
 
+  it("accepts and rejects subscription names", () => {
+    expect(validateTunnelConfigInput({
+      name: "ss",
+      type: "shadowsocks",
+      port: 8388,
+      subscriptionName: "  香港 IEPL  ",
+    }).subscriptionName).toBe("香港 IEPL");
+    expect(validateTunnelConfigInput({
+      name: "ss",
+      type: "shadowsocks",
+      port: 8388,
+      subscriptionName: "   ",
+    }).subscriptionName).toBeNull();
+    expect(() => validateTunnelConfigInput({
+      name: "ss",
+      type: "shadowsocks",
+      port: 8388,
+      subscriptionName: "a".repeat(65),
+    })).toThrow("Invalid subscription name");
+  });
+
   it("validates patch input", () => {
     expect(validateTunnelPatchInput({ subscriptionEnabled: false })).toEqual({ subscriptionEnabled: false });
     expect(() => validateTunnelPatchInput({ subscriptionEnabled: "false" })).toThrow("Invalid subscriptionEnabled");
@@ -197,6 +219,7 @@ describe("tunnel config input validation and normalization", () => {
       credential_generation: 2,
       subscription_enabled: 1,
       credentials_ciphertext: null,
+      subscription_name: null,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",
     };

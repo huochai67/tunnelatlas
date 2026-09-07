@@ -176,6 +176,9 @@
       <input id="tunnel-public-host" placeholder="留空则由 Agent 自动识别">
       <small class="field-help">公网 IP 或域名，不带端口。留空则由 Agent 自动上报识别。</small>
 
+      <label class="field-label" for="tunnel-subscription-name">订阅节点名（可选）</label>
+      <input id="tunnel-subscription-name" maxlength="64" placeholder="香港 IEPL">
+      <small class="field-help">客户端订阅列表中显示的名称。留空则为「节点名/隧道名」。</small>
       <div id="tunnel-opt-ss" class="tunnel-proto-options">
         <label class="field-label" for="tunnel-ss-method">加密方式</label>
         <select id="tunnel-ss-method">

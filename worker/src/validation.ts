@@ -125,6 +125,7 @@ export interface NormalizedTunnelConfigInput {
   publicHost: string | null;
   options: Record<string, unknown>;
   hops: HopRef[];
+  subscriptionName: string | null;
 }
 
 export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfigInput {
@@ -222,10 +223,22 @@ export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfi
   }
 
   const hops = parseHopRefs(body.hops);
-  return { name, type, listen, port, publicHost, options, hops };
+  const subscriptionName = parseSubscriptionName(body.subscriptionName);
+  return { name, type, listen, port, publicHost, options, hops, subscriptionName };
 }
 
 const HOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+function parseSubscriptionName(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw new HttpError(400, "Invalid subscription name");
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > 64 || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+    throw new HttpError(400, "Invalid subscription name");
+  }
+  return trimmed;
+}
 
 function parseHopRefs(value: unknown): HopRef[] {
   if (value === undefined || value === null) return [];

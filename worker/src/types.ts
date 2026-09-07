@@ -237,6 +237,7 @@ export interface CreateTunnelConfigInput {
   path?: string;
   host?: string | null;
   hops?: HopRef[];
+  subscriptionName?: string | null;
 }
 
 export interface UpdateTunnelConfigInput {
@@ -251,6 +252,7 @@ export interface UpdateTunnelConfigInput {
   path?: string;
   host?: string | null;
   hops?: HopRef[];
+  subscriptionName?: string | null;
 }
 
 export interface PatchTunnelConfigInput {
@@ -269,6 +271,7 @@ export interface TunnelConfigRow {
   credential_generation: number;
   subscription_enabled: number;
   credentials_ciphertext: string | null;
+  subscription_name: string | null;
   created_at: string;
   updated_at: string;
 }

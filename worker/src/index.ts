@@ -307,6 +307,7 @@ function formatTunnelConfig(row: TunnelConfigRow, hops: HopRef[] = []): Record<s
     publicHost: row.public_host,
     credentialGeneration: row.credential_generation,
     subscriptionEnabled: Boolean(row.subscription_enabled),
+    subscriptionName: row.subscription_name,
     hops,
     ...options,
     createdAt: row.created_at,
@@ -388,9 +389,9 @@ async function createTunnelConfig(
   try {
     const results = await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO tunnel_configs (node_id, id, name, type, listen, port, public_host, options_json, credential_generation, subscription_enabled, credentials_ciphertext, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)`
-      ).bind(nodeId, tunnelId, validated.name, validated.type, validated.listen, validated.port, validated.publicHost, optionsJson, credentialsCiphertext, now, now),
+        `INSERT INTO tunnel_configs (node_id, id, name, type, listen, port, public_host, options_json, credential_generation, subscription_enabled, credentials_ciphertext, subscription_name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?)`
+      ).bind(nodeId, tunnelId, validated.name, validated.type, validated.listen, validated.port, validated.publicHost, optionsJson, credentialsCiphertext, validated.subscriptionName, now, now),
       ...hopReplaceStatements(env, nodeId, tunnelId, validated.hops),
       env.DB.prepare("UPDATE nodes SET config_version = config_version + 1 WHERE id = ?").bind(nodeId),
     ]);
@@ -421,6 +422,7 @@ async function createTunnelConfig(
       publicHost: validated.publicHost,
       credentialGeneration: 1,
       subscriptionEnabled: true,
+      subscriptionName: validated.subscriptionName,
       hops: validated.hops,
       ...validated.options,
       createdAt: now,
@@ -457,15 +459,25 @@ async function updateTunnelConfig(
   const existingHops = await loadHopRefs(env, nodeId, tunnelId);
   const hopsChanged = !hopRefsEqual(existingHops, validated.hops);
   const changed = hasDesiredFieldChanged(existing, validated);
-  if (!changed && !hopsChanged) {
+  const subscriptionNameChanged = (existing.subscription_name ?? null) !== validated.subscriptionName;
+  if (!changed && !hopsChanged && !subscriptionNameChanged) {
     return json({ tunnel: formatTunnelConfig(existing, existingHops) });
   }
 
   if (hopsChanged) await assertHopGraph(env, nodeId, tunnelId, validated.hops);
 
+  const now = new Date().toISOString();
+  if (!changed && !hopsChanged) {
+    const updated = await env.DB.prepare(
+      `UPDATE tunnel_configs SET subscription_name = ?, updated_at = ?
+       WHERE node_id = ? AND id = ? AND updated_at = ? RETURNING *`,
+    ).bind(validated.subscriptionName, now, nodeId, tunnelId, existing.updated_at).first<TunnelConfigRow>();
+    if (!updated) throw new HttpError(409, "Tunnel configuration was modified concurrently");
+    return json({ tunnel: formatTunnelConfig(updated, existingHops) });
+  }
+
   const advanceCreds = shouldAdvanceCredentialGeneration(existing, validated);
   const nextCredGen = advanceCreds ? existing.credential_generation + 1 : existing.credential_generation;
-  const now = new Date().toISOString();
   const optionsJson = JSON.stringify(validated.options);
   let credentialsCiphertext = existing.credentials_ciphertext;
   if (advanceCreds || !credentialsCiphertext) {
@@ -482,11 +494,11 @@ async function updateTunnelConfig(
     const statements = [
       env.DB.prepare(
         `UPDATE tunnel_configs
-         SET name = ?, type = ?, listen = ?, port = ?, public_host = ?, options_json = ?, credential_generation = ?, credentials_ciphertext = ?, updated_at = ?
+         SET name = ?, type = ?, listen = ?, port = ?, public_host = ?, options_json = ?, credential_generation = ?, credentials_ciphertext = ?, subscription_name = ?, updated_at = ?
          WHERE node_id = ? AND id = ? AND updated_at = ?`
       ).bind(
         validated.name, validated.type, validated.listen, validated.port, validated.publicHost,
-        optionsJson, nextCredGen, credentialsCiphertext, now, nodeId, tunnelId, existing.updated_at
+        optionsJson, nextCredGen, credentialsCiphertext, validated.subscriptionName, now, nodeId, tunnelId, existing.updated_at
       ),
     ];
     if (hopsChanged) statements.push(...hopReplaceStatements(env, nodeId, tunnelId, validated.hops));
@@ -520,6 +532,7 @@ async function updateTunnelConfig(
       publicHost: validated.publicHost,
       credentialGeneration: nextCredGen,
       subscriptionEnabled: Boolean(existing.subscription_enabled),
+      subscriptionName: validated.subscriptionName,
       hops: validated.hops,
       ...validated.options,
       createdAt: existing.created_at,
@@ -1138,6 +1151,9 @@ async function tunnelFromRow(row: Record<string, unknown>, env: Env): Promise<Re
     status: row.status, metadata, authentication,
     lastSeenAt: row.last_seen_at, cloudflare,
     subscriptionEnabled: Boolean(row.subscription_enabled),
+    subscriptionName: typeof row.subscription_name === "string" && row.subscription_name.length > 0
+      ? row.subscription_name
+      : null,
   };
 }
 
@@ -1146,7 +1162,7 @@ function publicTunnelQuery(filter: boolean, onlineOnly: boolean, subscriptionOnl
     COALESCE(tc.name, t.name) AS name,
     t.kind, t.endpoint, t.protocol, t.status,
     t.metadata_json, t.authentication_ciphertext, t.last_seen_at,
-    tc.credentials_ciphertext, tc.type, tc.options_json,
+    tc.credentials_ciphertext, tc.type, tc.options_json, tc.subscription_name,
     CASE WHEN n.applied_config_version IS NOT NULL THEN tc.subscription_enabled ELSE t.subscription_enabled END AS subscription_enabled,
     n.name AS node_name,
     cf.hostname AS cf_hostname, cf.status AS cf_status, cf.source_endpoint AS cf_source_endpoint,
@@ -1204,6 +1220,7 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
       name: String(tunnel.name),
       protocol: String(tunnel.protocol),
       status: tunnel.status,
+      subscriptionName: typeof tunnel.subscriptionName === "string" ? tunnel.subscriptionName : null,
       cloudflare: frontend
         ? { hostname: frontend.hostname, status: frontend.status, address: preferredAddress }
         : null,
@@ -1227,7 +1244,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
     ).all<Record<string, unknown>>(),
     env.DB.prepare(
       `SELECT tc.id, tc.node_id, tc.name, tc.type, tc.listen, tc.port, tc.public_host,
-       tc.options_json, tc.credential_generation, tc.subscription_enabled,
+       tc.options_json, tc.credential_generation, tc.subscription_enabled, tc.subscription_name,
        n.name AS node_name, n.config_version, n.applied_config_version,
        t.status AS observed_status, t.endpoint AS observed_endpoint,
        t.metadata_json AS observed_metadata_json,
@@ -1301,6 +1318,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
       publicHost: row.public_host ? String(row.public_host) : null,
       credentialGeneration: Number(row.credential_generation),
       subscriptionEnabled: Boolean(row.subscription_enabled),
+      subscriptionName: row.subscription_name ? String(row.subscription_name) : null,
       hops: hopsByEntry.get(`${row.node_id}:${row.id}`) ?? [],
       protocolOptions: options,
       ...options,

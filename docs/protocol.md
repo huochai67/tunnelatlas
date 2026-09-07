@@ -22,15 +22,16 @@
 ### 隧道配置 CRUD 规则
 
 1. `POST /v1/admin/nodes/{nodeId}/tunnels`：
-   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`、对应协议选项，以及可选 `hops`（最多 3 项 `{ nodeId, tunnelId }`）。
+   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`、可选 `subscriptionName`（订阅显示名，1-64 字符，不含控制字符）、对应协议选项，以及可选 `hops`（最多 3 项 `{ nodeId, tunnelId }`）。
    - hops 必须指向其他节点上已存在的隧道，禁止自引用、同节点和环；否则 400/404。
    - 插入时 Worker 生成协议身份并加密存储，原子递增 `nodes.config_version`，返回 `{ tunnel }`（状态 201，不含明文密钥）。
    - 每个节点最多 64 条期望隧道；`name` 或 `port` 冲突返回 409。
 
 2. `PUT /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
-   - 完整替换可编辑字段（含 `hops`），保持 `id`、`node_id` 与 `subscription_enabled`。
+   - 完整替换可编辑字段（含 `hops` 与 `subscriptionName`），保持 `id`、`node_id` 与 `subscription_enabled`。
    - 当协议类型、Shadowsocks `method` 或 Hysteria2/TUIC `serverName` 改变时递增 `credential_generation` 并重新生成托管凭据。
-   - 期望字段或 hops 实际改变时递增 `config_version`；被其他入口引用为 hop 的隧道变更还会递增那些入口节点的版本。
+   - 期望字段或 hops 实际改变时递增 `config_version`；仅改 `subscriptionName` 不影响 Agent，不递增版本。
+   - 被其他入口引用为 hop 的隧道变更还会递增那些入口节点的版本。
 
 3. `PATCH /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
    - 仅接收 `{ "subscriptionEnabled": boolean }`，不递增 `config_version`。

@@ -19,6 +19,7 @@ const els = {
   tunnelId: $("#tunnel-id"), tunnelNodeId: $("#tunnel-node-id"), tunnelNodeSelect: $("#tunnel-node-select"),
   tunnelName: $("#tunnel-name"), tunnelType: $("#tunnel-type"), tunnelPort: $("#tunnel-port"),
   tunnelListen: $("#tunnel-listen"), tunnelPublicHost: $("#tunnel-public-host"),
+  tunnelSubscriptionName: $("#tunnel-subscription-name"),
   tunnelSsMethod: $("#tunnel-ss-method"), tunnelServerName: $("#tunnel-server-name"),
   tunnelTuicCc: $("#tunnel-tuic-cc"), tunnelVmessPath: $("#tunnel-vmess-path"), tunnelVmessHost: $("#tunnel-vmess-host"),
   tunnelHop1: $("#tunnel-hop-1"), tunnelHop2: $("#tunnel-hop-2"), tunnelHop3: $("#tunnel-hop-3"),
@@ -358,6 +359,7 @@ function openTunnelDialog(mode, nodeId, tunnelId = null) {
     els.tunnelPort.value = "";
     els.tunnelListen.value = "::";
     els.tunnelPublicHost.value = "";
+    els.tunnelSubscriptionName.value = "";
     els.tunnelSsMethod.value = "2022-blake3-aes-128-gcm";
     els.tunnelServerName.value = "www.bing.com";
     els.tunnelTuicCc.value = "bbr";
@@ -379,6 +381,7 @@ function openTunnelDialog(mode, nodeId, tunnelId = null) {
     els.tunnelPort.value = tunnel.port || "";
     els.tunnelListen.value = tunnel.listen || "::";
     els.tunnelPublicHost.value = tunnel.publicHost || "";
+    els.tunnelSubscriptionName.value = tunnel.subscriptionName || "";
     els.tunnelSsMethod.value = tunnel.method || "2022-blake3-aes-128-gcm";
     els.tunnelServerName.value = tunnel.serverName || (tunnel.type === "vless-reality" || tunnel.type === "anytls-reality" ? "addons.mozilla.org" : "www.bing.com");
     els.tunnelTuicCc.value = tunnel.congestionControl || "bbr";
@@ -413,8 +416,9 @@ els.tunnelForm.addEventListener("submit", async (event) => {
   const port = Number(els.tunnelPort.value);
   const listen = els.tunnelListen.value.trim() || "::";
   const publicHost = els.tunnelPublicHost.value.trim() || null;
+  const subscriptionName = els.tunnelSubscriptionName.value.trim() || null;
 
-  const payload = { name, type, port, listen, publicHost, hops: selectedHops() };
+  const payload = { name, type, port, listen, publicHost, subscriptionName, hops: selectedHops() };
   if (type === "shadowsocks") {
     payload.method = els.tunnelSsMethod.value;
   } else if (type === "hysteria2") {

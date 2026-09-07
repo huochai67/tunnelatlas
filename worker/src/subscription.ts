@@ -9,6 +9,7 @@ export interface SubscriptionTunnel {
   protocol: string;
   status: unknown;
   cloudflare?: { hostname: string; status: string; address?: string | null } | null;
+  subscriptionName?: string | null;
 }
 
 interface Endpoint {
@@ -62,7 +63,7 @@ function users(authentication: Credentials): Credentials[] {
 }
 
 function displayName(tunnel: SubscriptionTunnel, user?: Credentials, index?: number): string {
-  const base = `${tunnel.nodeName}/${tunnel.name}`;
+  const base = tunnel.subscriptionName?.trim() || `${tunnel.nodeName}/${tunnel.name}`;
   const userName = user && (text(user.name) ?? text(user.username));
   if (userName) return `${base}/${userName}`;
   return index === undefined ? base : `${base}/${index + 1}`;

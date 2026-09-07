@@ -43,6 +43,28 @@ describe("node subscription", () => {
       .toBe(uris.join("\n"));
   });
 
+  it("uses a custom subscription name in the URI fragment", () => {
+    const uris = subscriptionUris([
+      tunnel({ subscriptionName: "香港 IEPL" }),
+      tunnel({
+        subscriptionName: "HK-R",
+        authentication: { users: [{ name: "alice", uuid: "client-uuid", flow: "xtls-rprx-vision" }] },
+        endpoint: "203.0.113.8:443",
+        metadata: {
+          tls: {
+            enabled: true,
+            serverName: "addons.mozilla.org",
+            reality: { enabled: true, publicKey: "k", shortId: "0123456789abcdef" },
+          },
+        },
+        name: "vless",
+        protocol: "vless",
+      }),
+    ]);
+    expect(uris[0]!.endsWith(`#${encodeURIComponent("香港 IEPL")}`)).toBe(true);
+    expect(uris[1]).toContain(`#${encodeURIComponent("HK-R/alice")}`);
+  });
+
   it("supports vless reality with direct metadata.reality and includes tcp and headerType", () => {
     const tunnels = [
       tunnel({
