@@ -1219,7 +1219,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
   const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
   const now = Date.now();
 
-  const [nodesResult, desiredResult, legacyResult, hopResult] = await Promise.all([
+  const [nodesResult, desiredResult, legacyResult] = await Promise.all([
     env.DB.prepare(
       `SELECT n.id, n.name, n.labels_json, n.agent_version, n.last_seen_at, n.enrolled_at, n.created_at,
        n.public_key, n.config_version, n.applied_config_version, n.config_apply_error
@@ -1256,14 +1256,20 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
        WHERE n.applied_config_version IS NULL AND tc.id IS NULL
        ORDER BY n.name, t.name LIMIT 1000`
     ).all<Record<string, unknown>>(),
-    env.DB.prepare(
-      `SELECT entry_node_id, entry_tunnel_id, hop_node_id, hop_tunnel_id, position
-       FROM tunnel_hops ORDER BY entry_node_id, entry_tunnel_id, position LIMIT 4000`
-    ).all<{ entry_node_id: string; entry_tunnel_id: string; hop_node_id: string; hop_tunnel_id: string; position: number }>(),
   ]);
 
+  let hopRows: Array<{ entry_node_id: string; entry_tunnel_id: string; hop_node_id: string; hop_tunnel_id: string }> = [];
+  try {
+    hopRows = (await env.DB.prepare(
+      `SELECT entry_node_id, entry_tunnel_id, hop_node_id, hop_tunnel_id, position
+       FROM tunnel_hops ORDER BY entry_node_id, entry_tunnel_id, position LIMIT 4000`
+    ).all<{ entry_node_id: string; entry_tunnel_id: string; hop_node_id: string; hop_tunnel_id: string; position: number }>()).results ?? [];
+  } catch (error) {
+    console.error("tunnel_hops query failed", error);
+  }
+
   const hopsByEntry = new Map<string, HopRef[]>();
-  for (const row of hopResult.results) {
+  for (const row of hopRows) {
     const key = `${row.entry_node_id}:${row.entry_tunnel_id}`;
     const list = hopsByEntry.get(key) ?? [];
     list.push({ nodeId: row.hop_node_id, tunnelId: row.hop_tunnel_id });

@@ -223,6 +223,7 @@ function renderTunnels(tunnels) {
     const isManaged = Boolean(tunnel.managed);
     const isPending = isManaged && tunnel.status === "pending";
     const statusClass = isPending ? "pending" : (tunnel.status || "unknown");
+    const statusLabel = isPending ? "待应用" : (statusText(tunnel.status) || tunnel.status);
     const protocolLabel = tunnel.type || tunnel.protocol || "—";
     const hopCount = Array.isArray(tunnel.hops) ? tunnel.hops.length : 0;
     const hopLabel = hopCount > 0 ? ` · ${hopCount} 跳` : "";
