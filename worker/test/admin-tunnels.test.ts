@@ -293,6 +293,8 @@ describe("POST /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/credentials:rotate", 
   const existingTun = {
     node_id: "node_1",
     id: "tun_1",
+    type: "shadowsocks",
+    options_json: JSON.stringify({ method: "2022-blake3-aes-128-gcm" }),
     credential_generation: 3,
     updated_at: "2026-08-01T00:00:00Z",
   };

@@ -10,13 +10,14 @@
 
 ## 期望状态与凭据安全边界
 
-1. **凭据仅存在于 Agent 节点**：
-   - 协议密码、UUID、Reality 私钥与 TLS 自签名私钥全由 Agent 本地生成，持久化在本地 `0600` 的 `secrets.json` 与证书目录中。
-   - Worker 期望配置（`tunnel_configs` 表与 `desiredConfig` 网络传输）绝不包含密码、UUID、Reality 私钥或证书文件，仅下发协议元数据及代数计数器 `credentialGeneration`。
+1. **协议身份由 Worker 生成并加密存储**：
+   - 创建/轮换隧道时 Worker 生成密码、UUID、Reality 密钥对，密文写入 `tunnel_configs.credentials_ciphertext`。AAD 为 `creds:${nodeId}:${tunnelId}`，防止换绑。
+   - `desiredConfig` 只把该节点自己的 inbound 密钥发给该 Agent，外加它作为入口所需的 hop **客户端**参数（SS 密码、UUID、Reality 公钥与 ShortId）。Reality/TLS 私钥不会发给其他节点。
+   - Hysteria2/TUIC 自签名证书仍由 Agent 本地签发，证书私钥不出节点、不进 D1。
 2. **上报白名单与凭据隔离**：
-   - Agent 仅上报建立客户端连接所需的公共认证参数（Shadowsocks 密码、Hysteria2/TUIC 密码与 UUID、VMess UUID、Reality 公钥与 ShortId）。Reality 私钥、TLS 私钥及 sing-box 完整配置严禁上报。
-   - Worker 使用 Secret `CREDENTIALS_KEY` 通过 AES-256-GCM 加密认证对象后写入 D1，并将 Node ID 与 inbound ID 作为附加认证数据（AAD），防止密文被换绑。
-   - `READ_TOKEN` 和 `ADMIN_TOKEN` 都能读取解密后的认证参数，应按敏感凭据保护；管理控制台当前不会显示认证参数。
+   - Agent 仍可上报建立客户端连接所需的公共认证参数，供混合版本订阅回落。Reality 私钥、TLS 私钥及完整 sing-box 配置严禁上报。
+   - 观测行继续用 `CREDENTIALS_KEY` 加密，AAD 为 `${nodeId}:${id}`，与托管凭据上下文错开。
+   - `READ_TOKEN` 和 `ADMIN_TOKEN` 都能读取解密后的客户端认证参数，应按敏感凭据保护；管理控制台不展示密钥。
 3. **错误隔离与防泄露**：
    - 当 sing-box 校验失败、启动失败或本地文件操作失败时，详细错误（包括 stderr、文件路径或包含凭据的配置内容）仅打印在本地日志中。
    - 向 Worker 上报的 `configApplyError` 严格限定为枚举错误码（`invalid_desired_config`、`sing_box_validation_failed`、`sing_box_start_failed`、`local_apply_failed`），杜绝本地错误堆栈或敏感信息泄露至 D1。

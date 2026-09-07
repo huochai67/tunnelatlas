@@ -2,18 +2,18 @@
 
 TunnelAtlas 是一个基于 Cloudflare Workers 与本机 Rust 守护程序的隧道注册、托管和发现服务。
 
-管理员在 Cloudflare Worker 控制台集中定义期望隧道（支持 Shadowsocks、Hysteria2、TUIC、VLESS Reality、AnyTLS Reality 和 VMess WebSocket），本机 `tunnelatlasd` 负责安全接入、在本地生成协议凭据与证书、校验并原子收敛 sing-box 配置，并定期上报运行观测状态。业务流量不经过 TunnelAtlas。
+管理员在 Cloudflare Worker 控制台集中定义期望隧道（支持 Shadowsocks、Hysteria2、TUIC、VLESS Reality、AnyTLS Reality 和 VMess WebSocket，以及跨节点链式出站），本机 `tunnelatlasd` 负责安全接入、应用 Worker 下发的协议凭据、本地签发 HY2/TUIC 证书、校验并原子收敛 sing-box 配置，并定期上报运行观测状态。业务流量不经过 TunnelAtlas。
 
 ## 仓库结构
 
-- `agent/`：Rust 守护程序，负责注册、签名、期望配置拉取、本地凭据生成、sing-box 监督和观测状态上报。
+- `agent/`：Rust 守护程序，负责注册、签名、期望配置拉取、凭据落地、sing-box 监督和观测状态上报。
 - `worker/`：TypeScript Worker、D1 migration 与控制台前端。
 - `deploy/`：一键安装脚本与 systemd/OpenRC 托管文件。
 - `docs/`：架构、协议、安全、ADR 和开发文档。
 
 ## 核心特性
 
-- **云端集中管理，凭据本地私有**：在 Worker 控制台统一创建、编辑、隐藏、轮换或删除隧道；密码、UUID、Reality 私钥和 TLS 证书全在节点本地生成，绝不上报云端。
+- **云端集中管理**：在 Worker 控制台统一创建、编辑、隐藏、轮换或删除隧道，并配置入口到其他节点的 hops。协议密码、UUID 与 Reality 密钥由 Worker 生成并加密存储；HY2/TUIC 证书仍在节点本地签发。
 - **配置版本控制与原子收敛**：Worker 单调递增 `config_version`；Agent 在本地执行事务收敛，经 `sing-box check` 校验、热启动及 500 ms 存活探查确认无误后才切换提交，任何失败无损回滚。
 - **防重放与请求验签**：基于 Ed25519 签名与严格单调自增序列号，杜绝乱序与重放。
 - **自动灾备与进程监督**：sing-box 异常退出自动重启；Worker 宕机或网络离线不影响本地正常运行与启动。

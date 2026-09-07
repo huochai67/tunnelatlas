@@ -14,7 +14,7 @@ use rand::{RngCore, rngs::OsRng};
 use rcgen::generate_simple_self_signed;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::write_private_atomic, desired::DesiredTunnel};
+use crate::{config::write_private_atomic, desired::{DesiredTunnel, TunnelCredentials}};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -87,23 +87,25 @@ impl SecretStore {
             .retain(|id, _| active_ids.contains(id.as_str()));
 
         for tunnel in tunnels {
-            let needs_regen = match (
-                self.protocols.get(tunnel.id()),
-                self.generations.get(tunnel.id()),
-            ) {
-                (Some(secret), Some(&generation)) => {
-                    !secret.matches_desired(tunnel) || generation != tunnel.credential_generation()
+            let next_secret = if let Some(credentials) = tunnel.credentials() {
+                ProtocolSecret::from_credentials(tunnel, credentials)?
+            } else {
+                match (
+                    self.protocols.get(tunnel.id()),
+                    self.generations.get(tunnel.id()),
+                ) {
+                    (Some(secret), Some(&generation))
+                        if secret.matches_desired(tunnel)
+                            && generation == tunnel.credential_generation() =>
+                    {
+                        secret.clone()
+                    }
+                    _ => ProtocolSecret::generate_for_desired(tunnel),
                 }
-                _ => true,
             };
-            if needs_regen {
-                self.protocols.insert(
-                    tunnel.id().to_owned(),
-                    ProtocolSecret::generate_for_desired(tunnel),
-                );
-                self.generations
-                    .insert(tunnel.id().to_owned(), tunnel.credential_generation());
-            }
+            self.protocols.insert(tunnel.id().to_owned(), next_secret);
+            self.generations
+                .insert(tunnel.id().to_owned(), tunnel.credential_generation());
             ensure_desired_certificate(certs_dir, tunnel)?;
         }
         cleanup_desired_certificates(certs_dir, tunnels)?;
@@ -156,6 +158,93 @@ impl ProtocolSecret {
             DesiredTunnel::VmessWs { .. } => Self::VmessWs {
                 uuid: uuid::Uuid::new_v4().to_string(),
             },
+        }
+    }
+
+    pub fn from_credentials(tunnel: &DesiredTunnel, credentials: &TunnelCredentials) -> Result<Self> {
+        match tunnel {
+            DesiredTunnel::Shadowsocks { .. } => Ok(Self::Shadowsocks {
+                password: credentials
+                    .password
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing password for {}", tunnel.id()))?,
+            }),
+            DesiredTunnel::Hysteria2 { .. } => Ok(Self::Hysteria2 {
+                password: credentials
+                    .password
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing password for {}", tunnel.id()))?,
+            }),
+            DesiredTunnel::Tuic { .. } => Ok(Self::Tuic {
+                uuid: credentials
+                    .uuid
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing uuid for {}", tunnel.id()))?,
+                password: credentials
+                    .password
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing password for {}", tunnel.id()))?,
+            }),
+            DesiredTunnel::VlessReality { .. } => Ok(Self::VlessReality {
+                uuid: credentials
+                    .uuid
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing uuid for {}", tunnel.id()))?,
+                private_key: credentials
+                    .private_key
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing private key for {}", tunnel.id()))?,
+                public_key: credentials
+                    .public_key
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing public key for {}", tunnel.id()))?,
+                short_id: credentials
+                    .short_id
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing short id for {}", tunnel.id()))?,
+            }),
+            DesiredTunnel::AnytlsReality { .. } => Ok(Self::AnytlsReality {
+                name: credentials
+                    .name
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "tunnelatlas".to_owned()),
+                password: credentials
+                    .password
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing password for {}", tunnel.id()))?,
+                private_key: credentials
+                    .private_key
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing private key for {}", tunnel.id()))?,
+                public_key: credentials
+                    .public_key
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing public key for {}", tunnel.id()))?,
+                short_id: credentials
+                    .short_id
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing short id for {}", tunnel.id()))?,
+            }),
+            DesiredTunnel::VmessWs { .. } => Ok(Self::VmessWs {
+                uuid: credentials
+                    .uuid
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .with_context(|| format!("missing uuid for {}", tunnel.id()))?,
+            }),
         }
     }
 
@@ -284,6 +373,8 @@ mod tests {
             public_host: None,
             credential_generation: 1,
             method: "2022-blake3-aes-128-gcm".into(),
+            credentials: None,
+            hops: vec![],
         };
 
         let mut secrets = SecretStore::default();
@@ -311,6 +402,8 @@ mod tests {
             public_host: None,
             credential_generation: 2,
             method: "2022-blake3-aes-128-gcm".into(),
+            credentials: None,
+            hops: vec![],
         };
         assert!(
             secrets

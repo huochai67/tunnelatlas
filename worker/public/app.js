@@ -21,6 +21,7 @@ const els = {
   tunnelListen: $("#tunnel-listen"), tunnelPublicHost: $("#tunnel-public-host"),
   tunnelSsMethod: $("#tunnel-ss-method"), tunnelServerName: $("#tunnel-server-name"),
   tunnelTuicCc: $("#tunnel-tuic-cc"), tunnelVmessPath: $("#tunnel-vmess-path"), tunnelVmessHost: $("#tunnel-vmess-host"),
+  tunnelHop1: $("#tunnel-hop-1"), tunnelHop2: $("#tunnel-hop-2"), tunnelHop3: $("#tunnel-hop-3"),
   tunnelOptSs: $("#tunnel-opt-ss"), tunnelOptServerName: $("#tunnel-opt-server-name"),
   tunnelOptTuicCc: $("#tunnel-opt-tuic-cc"), tunnelOptVmess: $("#tunnel-opt-vmess"),
   tunnelCredWarning: $("#tunnel-cred-warning"), tunnelError: $("#tunnel-error"),
@@ -222,8 +223,9 @@ function renderTunnels(tunnels) {
     const isManaged = Boolean(tunnel.managed);
     const isPending = isManaged && tunnel.status === "pending";
     const statusClass = isPending ? "pending" : (tunnel.status || "unknown");
-    const statusLabel = isPending ? "待应用" : (statusText(tunnel.status) || tunnel.status);
     const protocolLabel = tunnel.type || tunnel.protocol || "—";
+    const hopCount = Array.isArray(tunnel.hops) ? tunnel.hops.length : 0;
+    const hopLabel = hopCount > 0 ? ` · ${hopCount} 跳` : "";
     const directionLabel = tunnel.metadata?.direction || tunnel.kind?.split("/").pop() || "inbound";
 
     let actionsCell = "";
@@ -244,7 +246,7 @@ function renderTunnels(tunnels) {
     return `<tr>
       <td><span class="table-status ${escapeAttr(statusClass)}">${escapeHtml(statusLabel)}</span></td>
       <td class="tunnel-name"><strong>${escapeHtml(tunnel.name)}</strong><small>${escapeHtml(tunnel.nodeName)}</small></td>
-      <td>${escapeHtml(directionLabel)} / ${escapeHtml(protocolLabel)}</td>
+      <td>${escapeHtml(directionLabel)} / ${escapeHtml(protocolLabel)}${escapeHtml(hopLabel)}</td>
       <td class="endpoint">${escapeHtml(tunnel.endpoint || "—")}</td>
       <td>${escapeHtml(tunnel.nodeName)}</td>
       <td class="sub-column">${subscriptionCell(tunnel)}</td>
@@ -307,6 +309,33 @@ function updateTunnelDialogFields() {
     els.tunnelCredWarning.classList.add("hidden");
   }
 }
+function hopSelects() {
+  return [els.tunnelHop1, els.tunnelHop2, els.tunnelHop3];
+}
+
+function fillHopOptions(entryNodeId, selected = []) {
+  const tunnels = (state.overview.tunnels || []).filter((tunnel) => tunnel.managed && tunnel.nodeId !== entryNodeId);
+  const blank = ["不经过下一跳", "无第二跳", "无第三跳"];
+  hopSelects().forEach((select, index) => {
+    const current = selected[index] ? `${selected[index].nodeId}:${selected[index].tunnelId}` : "";
+    select.innerHTML = `<option value="">${blank[index]}</option>` + tunnels.map((tunnel) => {
+      const value = `${tunnel.nodeId}:${tunnel.id}`;
+      return `<option value="${escapeAttr(value)}"${value === current ? " selected" : ""}>${escapeHtml(tunnel.nodeName)} / ${escapeHtml(tunnel.name)} (${escapeHtml(tunnel.type || tunnel.protocol)})</option>`;
+    }).join("");
+  });
+}
+
+function selectedHops() {
+  const hops = [];
+  for (const select of hopSelects()) {
+    const value = select.value;
+    if (!value) continue;
+    const separator = value.indexOf(":");
+    if (separator <= 0) continue;
+    hops.push({ nodeId: value.slice(0, separator), tunnelId: value.slice(separator + 1) });
+  }
+  return hops;
+}
 
 function openTunnelDialog(mode, nodeId, tunnelId = null) {
   tunnelDialogMode = mode;
@@ -334,6 +363,7 @@ function openTunnelDialog(mode, nodeId, tunnelId = null) {
     els.tunnelVmessPath.value = "/vmess";
     els.tunnelVmessHost.value = "";
     initialTunnelData = null;
+    fillHopOptions(els.tunnelNodeSelect.value, []);
   } else {
     const tunnel = (state.overview.tunnels || []).find((t) => t.nodeId === nodeId && t.id === tunnelId);
     if (!tunnel) return;
@@ -359,6 +389,7 @@ function openTunnelDialog(mode, nodeId, tunnelId = null) {
       method: tunnel.method || "2022-blake3-aes-128-gcm",
       serverName: tunnel.serverName || (tunnel.type === "vless-reality" || tunnel.type === "anytls-reality" ? "addons.mozilla.org" : "www.bing.com"),
     };
+    fillHopOptions(nodeId, tunnel.hops || []);
   }
 
   updateTunnelDialogFields();
@@ -368,6 +399,7 @@ function openTunnelDialog(mode, nodeId, tunnelId = null) {
 els.tunnelType.addEventListener("change", updateTunnelDialogFields);
 els.tunnelSsMethod.addEventListener("change", updateTunnelDialogFields);
 els.tunnelServerName.addEventListener("input", updateTunnelDialogFields);
+els.tunnelNodeSelect.addEventListener("change", () => fillHopOptions(els.tunnelNodeSelect.value, selectedHops()));
 els.tunnelCancelBtn.addEventListener("click", () => els.tunnelDialog.close());
 
 els.tunnelForm.addEventListener("submit", async (event) => {
@@ -381,7 +413,7 @@ els.tunnelForm.addEventListener("submit", async (event) => {
   const listen = els.tunnelListen.value.trim() || "::";
   const publicHost = els.tunnelPublicHost.value.trim() || null;
 
-  const payload = { name, type, port, listen, publicHost };
+  const payload = { name, type, port, listen, publicHost, hops: selectedHops() };
   if (type === "shadowsocks") {
     payload.method = els.tunnelSsMethod.value;
   } else if (type === "hysteria2") {

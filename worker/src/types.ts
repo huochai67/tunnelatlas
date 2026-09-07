@@ -64,6 +64,103 @@ export type DesiredTunnelType =
   | "anytls-reality"
   | "vmess-ws";
 
+export interface StoredCredentials {
+  password?: string;
+  uuid?: string;
+  privateKey?: string;
+  publicKey?: string;
+  shortId?: string;
+  name?: string;
+}
+
+export interface HopRef {
+  nodeId: string;
+  tunnelId: string;
+}
+
+export type DesiredHop =
+  | {
+    nodeId: string;
+    tunnelId: string;
+    tag: string;
+    type: DesiredTunnelType;
+    status: "pending";
+    port: number;
+  }
+  | DesiredReadyHop;
+
+export type DesiredReadyHop =
+  | {
+    nodeId: string;
+    tunnelId: string;
+    tag: string;
+    status: "ready";
+    type: "shadowsocks";
+    server: string;
+    port: number;
+    method: string;
+    password: string;
+  }
+  | {
+    nodeId: string;
+    tunnelId: string;
+    tag: string;
+    status: "ready";
+    type: "hysteria2";
+    server: string;
+    port: number;
+    password: string;
+    tls: { serverName: string; insecure: true; alpn: string[] };
+  }
+  | {
+    nodeId: string;
+    tunnelId: string;
+    tag: string;
+    status: "ready";
+    type: "tuic";
+    server: string;
+    port: number;
+    uuid: string;
+    password: string;
+    congestionControl: string;
+    tls: { serverName: string; insecure: true; alpn: string[] };
+  }
+  | {
+    nodeId: string;
+    tunnelId: string;
+    tag: string;
+    status: "ready";
+    type: "vless-reality";
+    server: string;
+    port: number;
+    uuid: string;
+    flow: "xtls-rprx-vision";
+    tls: { serverName: string; reality: { publicKey: string; shortId: string } };
+  }
+  | {
+    nodeId: string;
+    tunnelId: string;
+    tag: string;
+    status: "ready";
+    type: "anytls-reality";
+    server: string;
+    port: number;
+    password: string;
+    tls: { serverName: string; reality: { publicKey: string; shortId: string } };
+  }
+  | {
+    nodeId: string;
+    tunnelId: string;
+    tag: string;
+    status: "ready";
+    type: "vmess-ws";
+    server: string;
+    port: number;
+    uuid: string;
+    tls?: { serverName: string };
+    transport: { type: "ws"; path: string; host?: string };
+  };
+
 export interface DesiredTunnelBase {
   id: string;
   name: string;
@@ -72,6 +169,8 @@ export interface DesiredTunnelBase {
   port: number;
   publicHost: string | null;
   credentialGeneration: number;
+  credentials?: StoredCredentials;
+  hops?: DesiredHop[];
 }
 
 export interface ShadowsocksDesiredTunnel extends DesiredTunnelBase {
@@ -137,6 +236,7 @@ export interface CreateTunnelConfigInput {
   congestionControl?: string;
   path?: string;
   host?: string | null;
+  hops?: HopRef[];
 }
 
 export interface UpdateTunnelConfigInput {
@@ -150,6 +250,7 @@ export interface UpdateTunnelConfigInput {
   congestionControl?: string;
   path?: string;
   host?: string | null;
+  hops?: HopRef[];
 }
 
 export interface PatchTunnelConfigInput {
@@ -167,6 +268,7 @@ export interface TunnelConfigRow {
   options_json: string;
   credential_generation: number;
   subscription_enabled: number;
+  credentials_ciphertext: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -212,6 +212,20 @@
         </div>
       </div>
 
+      <div id="tunnel-opt-hops">
+        <label class="field-label" for="tunnel-hop-1">链式出站（可选，按顺序）</label>
+        <select id="tunnel-hop-1">
+          <option value="">不经过下一跳</option>
+        </select>
+        <select id="tunnel-hop-2">
+          <option value="">无第二跳</option>
+        </select>
+        <select id="tunnel-hop-3">
+          <option value="">无第三跳</option>
+        </select>
+        <small class="field-help">流量从本隧道进入后按顺序经所选隧道出网。最多 3 跳，必须是其他节点上的隧道。下一跳未就绪时入口会阻断而不是直出。</small>
+      </div>
+
       <div class="dialog-warning hidden" id="tunnel-cred-warning">注意：修改协议类型、Shadowsocks 加密方式或 Hysteria2/TUIC 证书域名将重新生成服务端凭据。</div>
       <div class="dialog-error hidden" id="tunnel-error"></div>
 

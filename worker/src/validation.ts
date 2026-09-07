@@ -6,6 +6,7 @@ import type {
   DesiredTunnel,
   DesiredTunnelType,
   EnrollmentBody,
+  HopRef,
   ReportBody,
   TunnelBody,
   TunnelConfigRow,
@@ -123,6 +124,7 @@ export interface NormalizedTunnelConfigInput {
   port: number;
   publicHost: string | null;
   options: Record<string, unknown>;
+  hops: HopRef[];
 }
 
 export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfigInput {
@@ -219,9 +221,33 @@ export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfi
     options = { path: rawPath, host };
   }
 
-  return { name, type, listen, port, publicHost, options };
+  const hops = parseHopRefs(body.hops);
+  return { name, type, listen, port, publicHost, options, hops };
 }
 
+const HOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+function parseHopRefs(value: unknown): HopRef[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 3) throw new HttpError(400, "Invalid hops");
+  const hops: HopRef[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new HttpError(400, "Invalid hop");
+    const record = item as Record<string, unknown>;
+    if (typeof record.nodeId !== "string" || !HOP_ID_RE.test(record.nodeId)) {
+      throw new HttpError(400, "Invalid hop nodeId");
+    }
+    if (typeof record.tunnelId !== "string" || !HOP_ID_RE.test(record.tunnelId)) {
+      throw new HttpError(400, "Invalid hop tunnelId");
+    }
+    const key = `${record.nodeId}:${record.tunnelId}`;
+    if (seen.has(key)) throw new HttpError(400, "Duplicate hop");
+    seen.add(key);
+    hops.push({ nodeId: record.nodeId, tunnelId: record.tunnelId });
+  }
+  return hops;
+}
 export function validateTunnelPatchInput(input: unknown): { subscriptionEnabled: boolean } {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new HttpError(400, "Invalid subscriptionEnabled");

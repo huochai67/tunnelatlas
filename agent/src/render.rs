@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::{
-    desired::DesiredTunnel,
+    desired::{DesiredHop, DesiredTunnel},
     secrets::{ProtocolSecret, SecretStore, desired_certificate_paths},
     sing_box::ObservedTunnel,
 };
@@ -23,11 +23,45 @@ pub fn render_desired(
 ) -> Result<RenderedConfig> {
     let mut inbounds = Vec::new();
     let mut observed_tunnels = Vec::new();
+    let mut outbounds = vec![json!({ "type": "direct", "tag": "direct" })];
+    let mut route_rules = Vec::new();
+    let mut needs_block = false;
+
     for tunnel in tunnels {
         let secret = secrets.get_desired(tunnel)?;
         let (inbound, metadata, authentication, reported_protocol) =
             render_desired_tunnel(tunnel, secret, certificates_dir)?;
         inbounds.push(inbound);
+
+        let hops = tunnel.hops();
+        let mut tunnel_status = status.to_owned();
+        if !hops.is_empty() {
+            if hops.iter().any(|hop| !hop.is_ready()) {
+                needs_block = true;
+                tunnel_status = "degraded".to_owned();
+                route_rules.push(json!({
+                    "inbound": [tunnel.name()],
+                    "outbound": "block"
+                }));
+            } else {
+                let mut previous: Option<&str> = None;
+                for hop in hops {
+                    let mut outbound = render_hop_outbound(hop)?;
+                    if let Some(detour) = previous {
+                        outbound["detour"] = json!(detour);
+                    }
+                    previous = Some(hop.tag.as_str());
+                    outbounds.push(outbound);
+                }
+                if let Some(last) = hops.last() {
+                    route_rules.push(json!({
+                        "inbound": [tunnel.name()],
+                        "outbound": last.tag
+                    }));
+                }
+            }
+        }
+
         let host = tunnel
             .public_host()
             .or(observed_address)
@@ -39,16 +73,27 @@ pub fn render_desired(
             kind: "sing-box/inbound".to_owned(),
             endpoint,
             protocol: reported_protocol.to_owned(),
-            status: status.to_owned(),
+            status: tunnel_status,
             metadata,
             authentication,
         });
     }
-    let document = json!({
+
+    if needs_block {
+        outbounds.push(json!({ "type": "block", "tag": "block" }));
+    }
+
+    let mut document = json!({
         "log": { "level": "info", "timestamp": true },
         "inbounds": inbounds,
-        "outbounds": [{ "type": "direct", "tag": "direct" }]
+        "outbounds": outbounds
     });
+    if !route_rules.is_empty() {
+        document["route"] = json!({
+            "rules": route_rules,
+            "final": "direct"
+        });
+    }
     Ok(RenderedConfig {
         bytes: serde_json::to_vec_pretty(&document)?,
         tunnels: observed_tunnels,
@@ -62,6 +107,124 @@ pub fn format_endpoint(host: &str, port: u16) -> String {
     } else {
         format!("{host}:{port}")
     }
+}
+
+fn render_hop_outbound(hop: &DesiredHop) -> Result<Value> {
+    let server = hop
+        .server
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("hop {} is missing a server", hop.tag))?;
+    let port = hop
+        .port
+        .context(format!("hop {} is missing a port", hop.tag))?;
+    let mut outbound = json!({
+        "tag": hop.tag,
+        "server": server,
+        "server_port": port,
+    });
+    match hop.protocol.as_str() {
+        "shadowsocks" => {
+            merge(
+                &mut outbound,
+                json!({
+                    "type": "shadowsocks",
+                    "method": hop.method.as_deref().unwrap_or("2022-blake3-aes-128-gcm"),
+                    "password": hop.password.as_deref().unwrap_or_default(),
+                }),
+            );
+        }
+        "hysteria2" => {
+            merge(
+                &mut outbound,
+                json!({
+                    "type": "hysteria2",
+                    "password": hop.password.as_deref().unwrap_or_default(),
+                    "tls": hop_tls(hop, true),
+                }),
+            );
+        }
+        "tuic" => {
+            merge(
+                &mut outbound,
+                json!({
+                    "type": "tuic",
+                    "uuid": hop.uuid.as_deref().unwrap_or_default(),
+                    "password": hop.password.as_deref().unwrap_or_default(),
+                    "congestion_control": hop.congestion_control.as_deref().unwrap_or("bbr"),
+                    "tls": hop_tls(hop, true),
+                }),
+            );
+        }
+        "vless-reality" => {
+            merge(
+                &mut outbound,
+                json!({
+                    "type": "vless",
+                    "uuid": hop.uuid.as_deref().unwrap_or_default(),
+                    "flow": hop.flow.as_deref().unwrap_or("xtls-rprx-vision"),
+                    "tls": hop_tls(hop, false),
+                }),
+            );
+        }
+        "anytls-reality" => {
+            merge(
+                &mut outbound,
+                json!({
+                    "type": "anytls",
+                    "password": hop.password.as_deref().unwrap_or_default(),
+                    "tls": hop_tls(hop, false),
+                }),
+            );
+        }
+        "vmess-ws" => {
+            let mut transport = json!({
+                "type": "ws",
+                "path": hop.transport.as_ref().and_then(|value| value.path.as_deref()).unwrap_or("/vmess"),
+            });
+            if let Some(host) = hop.transport.as_ref().and_then(|value| value.host.as_deref()) {
+                transport["headers"] = json!({ "Host": host });
+            }
+            let mut extra = json!({
+                "type": "vmess",
+                "uuid": hop.uuid.as_deref().unwrap_or_default(),
+                "alter_id": 0,
+                "security": "auto",
+                "transport": transport,
+            });
+            if hop.tls.is_some() {
+                extra["tls"] = hop_tls(hop, false);
+            }
+            merge(&mut outbound, extra);
+        }
+        other => bail!("unsupported hop type: {other}"),
+    }
+    Ok(outbound)
+}
+
+fn hop_tls(hop: &DesiredHop, h3: bool) -> Value {
+    let tls = hop.tls.as_ref();
+    let server_name = tls
+        .and_then(|value| value.server_name.as_deref())
+        .or_else(|| hop.transport.as_ref().and_then(|value| value.host.as_deref()))
+        .unwrap_or(hop.server.as_deref().unwrap_or_default());
+    let mut document = json!({
+        "enabled": true,
+        "server_name": server_name,
+        "insecure": tls.and_then(|value| value.insecure).unwrap_or(false),
+    });
+    if h3 {
+        document["alpn"] = json!(tls.and_then(|value| value.alpn.clone()).unwrap_or_else(|| vec!["h3".to_owned()]));
+    }
+    if let Some(reality) = tls.and_then(|value| value.reality.as_ref()) {
+        document["insecure"] = json!(false);
+        document["reality"] = json!({
+            "enabled": true,
+            "public_key": reality.public_key,
+            "short_id": reality.short_id
+        });
+    }
+    document
 }
 
 fn render_desired_tunnel(
@@ -284,6 +447,7 @@ fn merge(target: &mut Value, source: Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desired::{HopReality, HopTls};
 
     #[test]
     fn endpoint_formatting_handles_ipv4_ipv6_and_domain() {
@@ -307,6 +471,8 @@ mod tests {
                 public_host: None,
                 credential_generation: 1,
                 method: "2022-blake3-aes-128-gcm".into(),
+                credentials: None,
+                hops: vec![],
             },
             DesiredTunnel::Hysteria2 {
                 id: "t_hy2".into(),
@@ -316,6 +482,8 @@ mod tests {
                 public_host: None,
                 credential_generation: 1,
                 server_name: "www.bing.com".into(),
+                credentials: None,
+                hops: vec![],
             },
             DesiredTunnel::Tuic {
                 id: "t_tuic".into(),
@@ -326,6 +494,8 @@ mod tests {
                 credential_generation: 1,
                 server_name: "www.bing.com".into(),
                 congestion_control: "bbr".into(),
+                credentials: None,
+                hops: vec![],
             },
             DesiredTunnel::VlessReality {
                 id: "t_vless".into(),
@@ -335,6 +505,8 @@ mod tests {
                 public_host: Some("example.com".into()),
                 credential_generation: 1,
                 server_name: "addons.mozilla.org".into(),
+                credentials: None,
+                hops: vec![],
             },
             DesiredTunnel::AnytlsReality {
                 id: "t_anytls".into(),
@@ -344,6 +516,8 @@ mod tests {
                 public_host: None,
                 credential_generation: 1,
                 server_name: "addons.mozilla.org".into(),
+                credentials: None,
+                hops: vec![],
             },
             DesiredTunnel::VmessWs {
                 id: "t_vmess".into(),
@@ -354,6 +528,8 @@ mod tests {
                 credential_generation: 1,
                 path: "/vmess".into(),
                 host: Some("edge.example.com".into()),
+                credentials: None,
+                hops: vec![],
             },
         ];
 
@@ -396,5 +572,76 @@ mod tests {
         // SS endpoint should use observedAddress (203.0.113.8) since public_host is None
         let ss_tunnel = rendered.tunnels.iter().find(|t| t.id == "t_ss").unwrap();
         assert_eq!(ss_tunnel.endpoint, "203.0.113.8:8388");
+    }
+
+    #[test]
+    fn renders_ready_hops_as_detoured_outbounds() {
+        let temp = tempfile::tempdir().unwrap();
+        let certs_dir = temp.path().join("certs");
+        let tunnels = vec![DesiredTunnel::Shadowsocks {
+            id: "t_ss".into(),
+            name: "ss".into(),
+            listen: "::".into(),
+            port: 8388,
+            public_host: None,
+            credential_generation: 1,
+            method: "2022-blake3-aes-128-gcm".into(),
+            credentials: None,
+            hops: vec![
+                DesiredHop {
+                    node_id: "node_b".into(),
+                    tunnel_id: "t_mid".into(),
+                    tag: "hop-t_ss-t_mid".into(),
+                    protocol: "shadowsocks".into(),
+                    status: "ready".into(),
+                    server: Some("203.0.113.10".into()),
+                    port: Some(8388),
+                    method: Some("2022-blake3-aes-128-gcm".into()),
+                    password: Some("password".into()),
+                    uuid: None,
+                    flow: None,
+                    congestion_control: None,
+                    tls: None,
+                    transport: None,
+                },
+                DesiredHop {
+                    node_id: "node_c".into(),
+                    tunnel_id: "t_exit".into(),
+                    tag: "hop-t_ss-t_exit".into(),
+                    protocol: "vless-reality".into(),
+                    status: "ready".into(),
+                    server: Some("198.51.100.8".into()),
+                    port: Some(443),
+                    method: None,
+                    password: None,
+                    uuid: Some("11111111-1111-1111-1111-111111111111".into()),
+                    flow: Some("xtls-rprx-vision".into()),
+                    congestion_control: None,
+                    tls: Some(HopTls {
+                        server_name: Some("addons.mozilla.org".into()),
+                        insecure: None,
+                        alpn: None,
+                        reality: Some(HopReality {
+                            public_key: "pubkey".into(),
+                            short_id: "abcd".into(),
+                        }),
+                    }),
+                    transport: None,
+                },
+            ],
+        }];
+        let mut secrets = SecretStore::default();
+        secrets.reconcile_desired(&tunnels, &certs_dir).unwrap();
+        let rendered = render_desired(&tunnels, &secrets, &certs_dir, Some("203.0.113.8"), "healthy")
+            .unwrap();
+        let document: Value = serde_json::from_slice(&rendered.bytes).unwrap();
+        let outbounds = document["outbounds"].as_array().unwrap();
+        assert_eq!(outbounds[0]["tag"], "direct");
+        assert_eq!(outbounds[1]["tag"], "hop-t_ss-t_mid");
+        assert!(outbounds[1].get("detour").is_none());
+        assert_eq!(outbounds[2]["tag"], "hop-t_ss-t_exit");
+        assert_eq!(outbounds[2]["detour"], "hop-t_ss-t_mid");
+        assert_eq!(document["route"]["rules"][0]["outbound"], "hop-t_ss-t_exit");
+        assert_eq!(rendered.tunnels[0].status, "healthy");
     }
 }

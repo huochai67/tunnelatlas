@@ -19,7 +19,8 @@ class FakeD1 {
   }
 
   private tableFor(sql: string): "frontends" | "tunnels" | "nodes" | null {
-    if (sql.includes("tunnel_cloudflare_frontends")) return "frontends";
+    if (sql.includes("FROM tunnel_hops") || sql.includes("JOIN tunnel_hops")) return null;
+    if (sql.includes("FROM tunnel_cloudflare_frontends")) return "frontends";
     if (sql.includes("FROM tunnels") && !sql.includes("JOIN nodes")) return "tunnels";
     if (sql.includes("FROM nodes")) return "nodes";
     return null;

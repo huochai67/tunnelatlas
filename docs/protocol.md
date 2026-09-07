@@ -22,26 +22,26 @@
 ### 隧道配置 CRUD 规则
 
 1. `POST /v1/admin/nodes/{nodeId}/tunnels`：
-   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`（无端口/无通配符/全局可路由公网地址）、以及对应协议的选项。
-   - 每个节点最多允许 64 条期望隧道，超过限制返回 409 `Tunnel limit reached`。
-   - 节点内 `name` 或 `port` 冲突返回 409（`Tunnel name already exists` / `Tunnel port already in use`）。
-   - 插入成功原子递增 `nodes.config_version`，生成 `randomId("tunnel")` 并返回 `{ tunnel }`（状态 201）。
+   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`、对应协议选项，以及可选 `hops`（最多 3 项 `{ nodeId, tunnelId }`）。
+   - hops 必须指向其他节点上已存在的隧道，禁止自引用、同节点和环；否则 400/404。
+   - 插入时 Worker 生成协议身份并加密存储，原子递增 `nodes.config_version`，返回 `{ tunnel }`（状态 201，不含明文密钥）。
+   - 每个节点最多 64 条期望隧道；`name` 或 `port` 冲突返回 409。
 
 2. `PUT /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
-   - 完整替换可编辑字段，保持 `id`、`node_id` 与 `subscription_enabled`。
-   - 当协议类型、Shadowsocks `method` 或 Hysteria2/TUIC `serverName` 改变时递增 `credential_generation`；普通名称、端口、监听、公网地址、路径、Host、拥塞算法或 Reality 目标修改保持原凭据代数。
-   - 仅当期望字段发生实际改变时原子递增 `nodes.config_version`；无变更时不递增。
+   - 完整替换可编辑字段（含 `hops`），保持 `id`、`node_id` 与 `subscription_enabled`。
+   - 当协议类型、Shadowsocks `method` 或 Hysteria2/TUIC `serverName` 改变时递增 `credential_generation` 并重新生成托管凭据。
+   - 期望字段或 hops 实际改变时递增 `config_version`；被其他入口引用为 hop 的隧道变更还会递增那些入口节点的版本。
 
 3. `PATCH /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
-   - 仅接收 `{ "subscriptionEnabled": boolean }`，更新 `tunnel_configs.subscription_enabled`。由于只影响订阅输出而不影响 sing-box 渲染，不递增 `config_version`。
+   - 仅接收 `{ "subscriptionEnabled": boolean }`，不递增 `config_version`。
 
 4. `POST /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/credentials:rotate`：
-   - 递增对应隧道的 `credential_generation` 与节点的 `config_version`。旧观测认证信息在 Agent 汇报新配置前保持有效。
+   - Worker 重新生成该隧道协议身份，递增 `credential_generation` 与相关节点 `config_version`（含把它当作 hop 的入口节点）。
 
 5. `DELETE /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
-   - 必须先校验 `(node_id, id)` 存在于 `tunnel_configs` 中，不存在直接返回 404 `Tunnel configuration not found`，不执行任何外部清理副作用（遗留观测记录不是期望隧道）。
-   - 若存在跟踪的 Cloudflare 前端，先执行远程解绑清理；清理失败中止删除。
-   - 校验通过后原子删除期望记录、匹配的已观测记录和前端记录，并递增 `config_version`。
+   - 若该隧道被其他隧道引用为 hop，返回 409 `Tunnel is used as a next hop`。
+   - 否则按原规则清理 Cloudflare 前端、期望行与观测行，并递增 `config_version`。
+
 
 ## Agent 注册
 
@@ -103,14 +103,17 @@ METHOD\nPATH\nTIMESTAMP\nSEQUENCE\nBODY_SHA256
         "port": 8388,
         "publicHost": null,
         "credentialGeneration": 1,
-        "method": "2022-blake3-aes-128-gcm"
+        "method": "2022-blake3-aes-128-gcm",
+        "credentials": { "password": "<ss2022>" },
+        "hops": []
       }
     ]
   }
 }
 ```
 
-响应先读取节点版本号，再读取期望隧道列表；并发变更将使返回的隧道行更新于版本号，迫使 Agent 后续重新收敛。
+响应先读取节点版本号，再组装带托管凭据与已解析 hops 的期望隧道列表；并发变更将使返回的隧道行更新于版本号，迫使 Agent 后续重新收敛。
+
 
 ## 发现 API
 

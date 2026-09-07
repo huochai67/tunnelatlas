@@ -34,6 +34,7 @@ impl DesiredConfig {
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
         let mut ports = HashSet::new();
+        let mut hop_tags = HashSet::new();
         for tunnel in &self.tunnels {
             tunnel.validate()?;
             if !ids.insert(tunnel.id()) {
@@ -45,8 +46,104 @@ impl DesiredConfig {
             if !ports.insert(tunnel.port()) {
                 bail!("duplicate tunnel port: {}", tunnel.port());
             }
+            if tunnel.hops().len() > 3 {
+                bail!("tunnel {} has more than 3 hops", tunnel.id());
+            }
+            for hop in tunnel.hops() {
+                if !hop_tags.insert(hop.tag.as_str()) {
+                    bail!("duplicate hop tag: {}", hop.tag);
+                }
+            }
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelCredentials {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HopTls {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insecure: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpn: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reality: Option<HopReality>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HopReality {
+    pub public_key: String,
+    pub short_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HopTransport {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesiredHop {
+    pub node_id: String,
+    pub tunnel_id: String,
+    pub tag: String,
+    #[serde(rename = "type")]
+    pub protocol: String,
+    #[serde(default = "hop_ready")]
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub congestion_control: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<HopTls>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<HopTransport>,
+}
+
+fn hop_ready() -> String {
+    "ready".to_owned()
+}
+
+impl DesiredHop {
+    pub fn is_ready(&self) -> bool {
+        self.status == "ready" && self.server.as_deref().is_some_and(|s| !s.is_empty()) && self.port.is_some()
     }
 }
 
@@ -66,6 +163,10 @@ pub enum DesiredTunnel {
         credential_generation: u64,
         #[serde(default = "default_ss_method")]
         method: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credentials: Option<TunnelCredentials>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hops: Vec<DesiredHop>,
     },
     #[serde(rename_all = "camelCase")]
     Hysteria2 {
@@ -80,6 +181,10 @@ pub enum DesiredTunnel {
         credential_generation: u64,
         #[serde(default = "default_tls_name")]
         server_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credentials: Option<TunnelCredentials>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hops: Vec<DesiredHop>,
     },
     #[serde(rename_all = "camelCase")]
     Tuic {
@@ -96,6 +201,10 @@ pub enum DesiredTunnel {
         server_name: String,
         #[serde(default = "default_congestion_control")]
         congestion_control: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credentials: Option<TunnelCredentials>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hops: Vec<DesiredHop>,
     },
     #[serde(rename_all = "camelCase")]
     VlessReality {
@@ -110,6 +219,10 @@ pub enum DesiredTunnel {
         credential_generation: u64,
         #[serde(default = "default_reality_name")]
         server_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credentials: Option<TunnelCredentials>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hops: Vec<DesiredHop>,
     },
     #[serde(rename_all = "camelCase")]
     AnytlsReality {
@@ -124,6 +237,10 @@ pub enum DesiredTunnel {
         credential_generation: u64,
         #[serde(default = "default_reality_name")]
         server_name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credentials: Option<TunnelCredentials>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hops: Vec<DesiredHop>,
     },
     #[serde(rename_all = "camelCase")]
     VmessWs {
@@ -140,6 +257,10 @@ pub enum DesiredTunnel {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         host: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credentials: Option<TunnelCredentials>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hops: Vec<DesiredHop>,
     },
 }
 
@@ -235,6 +356,28 @@ impl DesiredTunnel {
         }
     }
 
+    pub fn credentials(&self) -> Option<&TunnelCredentials> {
+        match self {
+            Self::Shadowsocks { credentials, .. }
+            | Self::Hysteria2 { credentials, .. }
+            | Self::Tuic { credentials, .. }
+            | Self::VlessReality { credentials, .. }
+            | Self::AnytlsReality { credentials, .. }
+            | Self::VmessWs { credentials, .. } => credentials.as_ref(),
+        }
+    }
+
+    pub fn hops(&self) -> &[DesiredHop] {
+        match self {
+            Self::Shadowsocks { hops, .. }
+            | Self::Hysteria2 { hops, .. }
+            | Self::Tuic { hops, .. }
+            | Self::VlessReality { hops, .. }
+            | Self::AnytlsReality { hops, .. }
+            | Self::VmessWs { hops, .. } => hops,
+        }
+    }
+
     pub fn protocol_type(&self) -> &'static str {
         match self {
             Self::Shadowsocks { .. } => "shadowsocks",
@@ -282,6 +425,10 @@ impl DesiredTunnel {
             {
                 bail!("invalid public host: {host}");
             }
+        }
+
+        if let Some(credentials) = self.credentials() {
+            self.validate_credentials(credentials)?;
         }
 
         match self {
@@ -340,6 +487,75 @@ impl DesiredTunnel {
                     {
                         bail!("invalid vmess host: {h}");
                     }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_credentials(&self, credentials: &TunnelCredentials) -> Result<()> {
+        match self {
+            Self::Shadowsocks { .. } | Self::Hysteria2 { .. } => {
+                if credentials
+                    .password
+                    .as_deref()
+                    .is_none_or(|value| value.is_empty())
+                {
+                    bail!("missing password for tunnel {}", self.id());
+                }
+            }
+            Self::Tuic { .. } => {
+                if credentials.uuid.as_deref().is_none_or(|value| value.is_empty())
+                    || credentials
+                        .password
+                        .as_deref()
+                        .is_none_or(|value| value.is_empty())
+                {
+                    bail!("missing tuic credentials for tunnel {}", self.id());
+                }
+            }
+            Self::VlessReality { .. } => {
+                if credentials.uuid.as_deref().is_none_or(|value| value.is_empty())
+                    || credentials
+                        .private_key
+                        .as_deref()
+                        .is_none_or(|value| value.is_empty())
+                    || credentials
+                        .public_key
+                        .as_deref()
+                        .is_none_or(|value| value.is_empty())
+                    || credentials
+                        .short_id
+                        .as_deref()
+                        .is_none_or(|value| value.is_empty())
+                {
+                    bail!("missing vless reality credentials for tunnel {}", self.id());
+                }
+            }
+            Self::AnytlsReality { .. } => {
+                if credentials
+                    .password
+                    .as_deref()
+                    .is_none_or(|value| value.is_empty())
+                    || credentials
+                        .private_key
+                        .as_deref()
+                        .is_none_or(|value| value.is_empty())
+                    || credentials
+                        .public_key
+                        .as_deref()
+                        .is_none_or(|value| value.is_empty())
+                    || credentials
+                        .short_id
+                        .as_deref()
+                        .is_none_or(|value| value.is_empty())
+                {
+                    bail!("missing anytls reality credentials for tunnel {}", self.id());
+                }
+            }
+            Self::VmessWs { .. } => {
+                if credentials.uuid.as_deref().is_none_or(|value| value.is_empty()) {
+                    bail!("missing vmess uuid for tunnel {}", self.id());
                 }
             }
         }

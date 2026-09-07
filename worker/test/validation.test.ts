@@ -94,6 +94,7 @@ describe("tunnel config input validation and normalization", () => {
       port: 8388,
       publicHost: null,
       options: { method: "2022-blake3-aes-128-gcm" },
+      hops: [],
     });
   });
 
@@ -156,6 +157,28 @@ describe("tunnel config input validation and normalization", () => {
     );
   });
 
+  it("accepts and rejects hop lists", () => {
+    const result = validateTunnelConfigInput({
+      name: "ss",
+      type: "shadowsocks",
+      port: 8388,
+      hops: [{ nodeId: "node_exit", tunnelId: "tunnel_exit" }],
+    });
+    expect(result.hops).toEqual([{ nodeId: "node_exit", tunnelId: "tunnel_exit" }]);
+    expect(() => validateTunnelConfigInput({
+      name: "ss",
+      type: "shadowsocks",
+      port: 8388,
+      hops: [{ nodeId: "node_exit", tunnelId: "tunnel_exit" }, { nodeId: "node_exit", tunnelId: "tunnel_exit" }],
+    })).toThrow("Duplicate hop");
+    expect(() => validateTunnelConfigInput({
+      name: "ss",
+      type: "shadowsocks",
+      port: 8388,
+      hops: [1, 2, 3, 4],
+    })).toThrow("Invalid hops");
+  });
+
   it("validates patch input", () => {
     expect(validateTunnelPatchInput({ subscriptionEnabled: false })).toEqual({ subscriptionEnabled: false });
     expect(() => validateTunnelPatchInput({ subscriptionEnabled: "false" })).toThrow("Invalid subscriptionEnabled");
@@ -173,6 +196,7 @@ describe("tunnel config input validation and normalization", () => {
       options_json: JSON.stringify({ method: "2022-blake3-aes-256-gcm" }),
       credential_generation: 2,
       subscription_enabled: 1,
+      credentials_ciphertext: null,
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-01T00:00:00Z",
     };

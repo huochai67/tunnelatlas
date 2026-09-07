@@ -109,6 +109,8 @@ async fn converge_commits_desired_and_discards_legacy_yaml() {
             public_host: None,
             credential_generation: 1,
             method: "2022-blake3-aes-128-gcm".into(),
+            credentials: None,
+            hops: vec![],
         }],
     };
 
@@ -195,6 +197,8 @@ async fn converge_validation_failure_restores_snapshots_and_preserves_legacy_yam
             public_host: None,
             credential_generation: 1,
             method: "2022-blake3-aes-128-gcm".into(),
+            credentials: None,
+            hops: vec![],
         }],
     };
 
@@ -228,6 +232,8 @@ async fn converge_startup_failure_restores_snapshots() {
             public_host: None,
             credential_generation: 1,
             method: "2022-blake3-aes-128-gcm".into(),
+            credentials: None,
+            hops: vec![],
         }],
     };
 
@@ -261,6 +267,8 @@ async fn credential_rotation_rotates_only_targeted_tunnel() {
                 public_host: None,
                 credential_generation: 1,
                 method: "2022-blake3-aes-128-gcm".into(),
+                credentials: None,
+                hops: vec![],
             },
             DesiredTunnel::Shadowsocks {
                 id: "tun_2".into(),
@@ -270,6 +278,8 @@ async fn credential_rotation_rotates_only_targeted_tunnel() {
                 public_host: None,
                 credential_generation: 1,
                 method: "2022-blake3-aes-128-gcm".into(),
+                credentials: None,
+                hops: vec![],
             },
         ],
     };
@@ -300,6 +310,8 @@ async fn credential_rotation_rotates_only_targeted_tunnel() {
                 public_host: None,
                 credential_generation: 2,
                 method: "2022-blake3-aes-128-gcm".into(),
+                credentials: None,
+                hops: vec![],
             },
             DesiredTunnel::Shadowsocks {
                 id: "tun_2".into(),
@@ -309,6 +321,8 @@ async fn credential_rotation_rotates_only_targeted_tunnel() {
                 public_host: None,
                 credential_generation: 1,
                 method: "2022-blake3-aes-128-gcm".into(),
+                credentials: None,
+                hops: vec![],
             },
         ],
     };
