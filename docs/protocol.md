@@ -8,21 +8,21 @@
 |---|---|---|
 | POST | `/v1/admin/nodes` | 创建待接入节点并生成首次注册码 |
 | POST | `/v1/admin/nodes/{nodeId}/enrollment-tokens` | 为待接入节点废止旧码并生成新注册码 |
-| POST | `/v1/admin/nodes/{nodeId}/enrollment:reset` | 撤销旧 Agent 身份、清空已观测隧道并生成新注册码 |
-| DELETE | `/v1/admin/nodes/{nodeId}` | 永久删除节点、注册码、期望隧道与观测隧道 |
-| GET | `/v1/admin/overview` | 获取控制台所需的节点和隧道概况（包含期望与观测状态） |
+| POST | `/v1/admin/nodes/{nodeId}/enrollment:reset` | 撤销旧 Agent 身份、清理 Cloudflare 前端、清空已观测隧道并生成新注册码（若节点隧道被其他节点引用为 hop，同时递增依赖入口节点的 `config_version`） |
+| DELETE | `/v1/admin/nodes/{nodeId}` | 永久删除节点、注册码、期望隧道与观测隧道（若节点存在被其他隧道引用的 hop，在清理 Cloudflare 前端前直接返回 409） |
+| GET | `/v1/admin/overview` | 获取控制台所需的节点和隧道概况（包含期望与观测状态，不解密也不返回 `authentication` 凭据） |
 | POST | `/v1/admin/nodes/{nodeId}/tunnels` | 为节点创建期望隧道配置（递增 `config_version`） |
 | PUT | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}` | 完整更新期望隧道字段（必要时递增 `credential_generation` 和 `config_version`） |
 | PATCH | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}` | 修改隧道的订阅可见性（`subscriptionEnabled`，不递增 `config_version`） |
 | POST | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/credentials:rotate` | 显式触发该隧道凭据轮换（递增 `credential_generation` 和 `config_version`） |
 | DELETE | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}` | 删除期望隧道与观测状态，清理 Cloudflare 前端并递增 `config_version` |
-| PUT | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/cloudflare` | 启用/重试/重新同步 VMess-WS 隧道的 Cloudflare 前端 |
-| DELETE | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/cloudflare` | 停用前端：删除代理 DNS、Flexible SSL 与 Origin 端口规则 |
+| PUT | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/cloudflare` | 启用/重试/重新同步 VMess-WS 隧道的 Cloudflare 前端（状态变更时递增引用该隧道作为 hop 的入口节点 `config_version`） |
+| DELETE | `/v1/admin/nodes/{nodeId}/tunnels/{tunnelId}/cloudflare` | 停用前端：删除代理 DNS、Flexible SSL 与 Origin 端口规则（状态变更时递增引用该隧道作为 hop 的入口节点 `config_version`） |
 
 ### 隧道配置 CRUD 规则
 
 1. `POST /v1/admin/nodes/{nodeId}/tunnels`：
-   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`、可选 `subscriptionName`（订阅显示名，1-64 字符，不含控制字符）、对应协议选项，以及可选 `hops`（最多 3 项 `{ nodeId, tunnelId }`）。
+   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`、可选 `subscriptionName`（订阅显示名，1-64 字符，不含控制字符）、对应协议选项，以及可选 `hops`（最多 3 项 `{ nodeId, tunnelId }`）。其中 Hysteria2 / TUIC / VLESS-Reality / AnyTLS-Reality 的 `serverName` 必须为严格 DNS 主机名（总长不超过 253 字符，拒绝 IP、URL、端口、下划线与空白字符）。
    - hops 必须指向其他节点上已存在的隧道，禁止自引用、同节点和环；否则 400/404。
    - 插入时 Worker 生成协议身份并加密存储，原子递增 `nodes.config_version`，返回 `{ tunnel }`（状态 201，不含明文密钥）。
    - 每个节点最多 64 条期望隧道；`name` 或 `port` 冲突返回 409。
@@ -56,6 +56,8 @@ Authorization: Enrollment <one-time-token>
 注册码直接绑定节点，以加 pepper 的 SHA-256 摘要存储。Worker 通过条件更新保证竞争请求中只有一个能够认领节点，响应为 `{ "agentId": "node_..." }`。
 
 ## Agent 报告与期望状态同步
+
+Agent 启动后立即发起首次状态上报；后续心跳围绕 `reportIntervalSeconds` 自动施加 `±10%` 随机抖动，避免多节点同步上报产生惊群请求。
 
 ```http
 POST /v1/agent/report

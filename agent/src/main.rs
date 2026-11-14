@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use fs2::FileExt;
-use tokio::time::MissedTickBehavior;
+use tokio::time::{Instant, MissedTickBehavior};
 use tunnelatlasd::{
     client::AtlasClient,
     config::Config,
@@ -280,9 +280,7 @@ async fn run(
         let _ = runtime.save(&runtime_path);
     }
 
-    let mut report_interval =
-        tokio::time::interval(Duration::from_secs(config.report_interval_seconds));
-    report_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut next_report = Instant::now();
     let mut process_interval = tokio::time::interval(Duration::from_secs(2));
     process_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -296,7 +294,7 @@ async fn run(
                 supervisor.stop().await?;
                 return Ok(());
             }
-            _ = report_interval.tick() => {
+            _ = tokio::time::sleep_until(next_report) => {
                 let runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
                 let (tunnels, applied_version) = if let Some(applied) = &runtime.applied_desired_config {
                     let secrets = SecretStore::load(Path::new(&config.sing_box.secrets_path)).unwrap_or_default();
@@ -379,6 +377,8 @@ async fn run(
                     }
                     Err(error) => eprintln!("report failed: {error:#}"),
                 }
+                next_report =
+                    Instant::now() + config.jittered_report_delay(&mut rand::thread_rng());
             }
             _ = process_interval.tick() => {
                 let runtime = RuntimeState::load(&runtime_path).unwrap_or_default();

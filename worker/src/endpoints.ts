@@ -110,6 +110,12 @@ export function validWebSocketPath(value: string): boolean {
     && value.startsWith("/") && !/[\x00-\x20"\\#?]/.test(value);
 }
 
+export function validServerName(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || /^\d+(?:\.\d+){0,3}$/.test(trimmed)) return false;
+  return HOSTNAME.test(trimmed);
+}
+
 export function validFrontendAddress(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return false;

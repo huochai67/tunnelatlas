@@ -58,6 +58,7 @@ function frontendRow(nodeId = "node_one", tunnelId = "inbound-1"): Record<string
 function testEnv(
   firstRows: Array<Record<string, unknown> | null> = [],
   frontendRows: Array<Record<string, unknown>> = [],
+  hopRows: Array<Record<string, unknown>> = [],
 ) {
   const calls: DatabaseCall[] = [];
   const rows = [...firstRows];
@@ -78,6 +79,7 @@ function testEnv(
         },
         async all() {
           if (sql.includes("tunnel_cloudflare_frontends")) return { results: [...frontends.values()] };
+          if (sql.includes("FROM tunnel_hops")) return { results: hopRows };
           return { results: [] };
         },
         async run() { return { meta: { changes: 1 } }; },
@@ -221,6 +223,42 @@ describe("admin node management", () => {
     expect(response.status).toBe(502);
     expect(calls.some((call) => call.sql.includes("DELETE FROM nodes"))).toBe(false);
     cf.restore();
+  });
+
+  it("rejects node deletion with 409 before cleaning up Cloudflare frontends when referenced as a hop", async () => {
+    let cfCalls = 0;
+    const cf = mockCloudflare(() => {
+      cfCalls += 1;
+      return cloudflareOk({ id: "unexpected" });
+    });
+    const { env, calls } = testEnv(
+      [{ id: "node_one", name: "edge" }],
+      [frontendRow()],
+      [{ entry_node_id: "node_entry", entry_tunnel_id: "t_entry", position: 0, hop_node_id: "node_one", hop_tunnel_id: "t_hop" }],
+    );
+    const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_one", "DELETE"), env);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ title: "Node has tunnels used as next hops" });
+    expect(cfCalls).toBe(0);
+    expect(calls.some((call) => call.sql.includes("DELETE FROM tunnel_cloudflare_frontends"))).toBe(false);
+    expect(calls.some((call) => call.sql.includes("DELETE FROM nodes"))).toBe(false);
+    cf.restore();
+  });
+
+  it("bumps dependent entry node versions when resetting enrollment", async () => {
+    const { env, calls } = testEnv(
+      [{ id: "node_one", name: "edge", public_key: "old-key" }],
+      [],
+      [{ entry_node_id: "node_entry", entry_tunnel_id: "t_entry", position: 0, hop_node_id: "node_one", hop_tunnel_id: "t_hop" }],
+    );
+    const response = await worker.fetch(adminRequest("/v1/admin/nodes/node_one/enrollment:reset", "POST"), env);
+
+    expect(response.status).toBe(200);
+    expect(calls.some((call) =>
+      call.sql.includes("UPDATE nodes SET config_version = config_version + 1 WHERE id = ?")
+      && call.values[0] === "node_entry",
+    )).toBe(true);
   });
 
   it("requires ADMIN_TOKEN before touching the database", async () => {

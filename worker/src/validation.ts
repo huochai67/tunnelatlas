@@ -1,5 +1,5 @@
 import { base64UrlToBytes } from "./crypto";
-import { validFrontendAddress, validIpAddress, validWebSocketPath } from "./endpoints";
+import { validFrontendAddress, validIpAddress, validServerName, validWebSocketPath } from "./endpoints";
 import { HttpError } from "./http";
 import type {
   ConfigApplyErrorCode,
@@ -128,6 +128,14 @@ export interface NormalizedTunnelConfigInput {
   subscriptionName: string | null;
 }
 
+function parseServerName(value: unknown, fallback: string): string {
+  const serverName = value !== undefined && value !== null
+    ? (typeof value === "string" ? value.trim() : "")
+    : fallback;
+  if (!validServerName(serverName)) throw new HttpError(400, "Invalid server name");
+  return serverName;
+}
+
 export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfigInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new HttpError(400, "Invalid tunnel configuration input");
@@ -182,27 +190,15 @@ export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfi
     if (!SS_METHODS[rawMethod]) throw new HttpError(400, "Invalid Shadowsocks method");
     options = { method: rawMethod };
   } else if (type === "hysteria2") {
-    const rawServer = body.serverName !== undefined && body.serverName !== null
-      ? (typeof body.serverName === "string" ? body.serverName.trim() : "")
-      : "www.bing.com";
-    if (!rawServer) throw new HttpError(400, "Invalid server name");
-    options = { serverName: rawServer };
+    options = { serverName: parseServerName(body.serverName, "www.bing.com") };
   } else if (type === "tuic") {
-    const rawServer = body.serverName !== undefined && body.serverName !== null
-      ? (typeof body.serverName === "string" ? body.serverName.trim() : "")
-      : "www.bing.com";
-    if (!rawServer) throw new HttpError(400, "Invalid server name");
     const rawCc = body.congestionControl !== undefined && body.congestionControl !== null
       ? (typeof body.congestionControl === "string" ? body.congestionControl.trim() : "")
       : "bbr";
     if (!TUIC_CONGESTION[rawCc]) throw new HttpError(400, "Invalid TUIC congestion control");
-    options = { serverName: rawServer, congestionControl: rawCc };
+    options = { serverName: parseServerName(body.serverName, "www.bing.com"), congestionControl: rawCc };
   } else if (type === "vless-reality" || type === "anytls-reality") {
-    const rawServer = body.serverName !== undefined && body.serverName !== null
-      ? (typeof body.serverName === "string" ? body.serverName.trim() : "")
-      : "addons.mozilla.org";
-    if (!rawServer) throw new HttpError(400, "Invalid server name");
-    options = { serverName: rawServer };
+    options = { serverName: parseServerName(body.serverName, "addons.mozilla.org") };
   } else if (type === "vmess-ws") {
     const rawPath = body.path !== undefined && body.path !== null
       ? (typeof body.path === "string" ? body.path.trim() : "")

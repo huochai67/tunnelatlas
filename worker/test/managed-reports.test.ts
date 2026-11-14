@@ -435,6 +435,73 @@ describe("GET /v1/admin/overview with managed and legacy tunnels", () => {
     expect(legacy?.managed).toBe(false);
     expect(legacy?.name).toBe("old-local");
   });
+
+  it("omits and never decrypts authentication credentials on /v1/admin/overview", async () => {
+    const { env } = testEnv({
+      node: {
+        id: "node_1",
+        name: "Node 1",
+        public_key: "key",
+        config_version: 2,
+        applied_config_version: null,
+        config_apply_error: null,
+        labels_json: "{}",
+        agent_version: "0.2.0",
+        last_seen_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      },
+      tunnelConfigs: [{
+        node_id: "node_1",
+        id: "desired_1",
+        name: "ss-managed",
+        type: "shadowsocks",
+        listen: "::",
+        port: 8388,
+        public_host: null,
+        options_json: JSON.stringify({ method: "2022-blake3-aes-128-gcm" }),
+        credential_generation: 1,
+        subscription_enabled: 1,
+      }],
+      observedTunnels: [
+        {
+          node_id: "node_1",
+          id: "desired_1",
+          name: "ss-managed",
+          kind: "sing-box/inbound",
+          endpoint: "203.0.113.1:8388",
+          protocol: "shadowsocks",
+          status: "healthy",
+          metadata_json: "{}",
+          authentication_ciphertext: "not-valid-v1-ciphertext",
+          last_seen_at: new Date().toISOString(),
+          subscription_enabled: 1,
+        },
+        {
+          node_id: "node_1",
+          id: "legacy_1",
+          name: "old-local",
+          kind: "sing-box/inbound",
+          endpoint: "203.0.113.1:9000",
+          protocol: "hysteria2",
+          status: "healthy",
+          metadata_json: "{}",
+          authentication_ciphertext: "not-valid-v1-ciphertext",
+          last_seen_at: new Date().toISOString(),
+          subscription_enabled: 1,
+        },
+      ],
+    });
+
+    const res = await worker.fetch(new Request("https://atlas.example/v1/admin/overview", {
+      headers: { Authorization: "Bearer admin-token" },
+    }), env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { tunnels: Array<Record<string, unknown>> };
+    expect(body.tunnels).toHaveLength(2);
+    for (const tunnel of body.tunnels) {
+      expect("authentication" in tunnel).toBe(false);
+    }
+  });
 });
 
 describe("POST /v1/admin/nodes/{nodeId}/enrollment:reset", () => {

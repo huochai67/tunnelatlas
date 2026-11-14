@@ -445,8 +445,7 @@ impl DesiredTunnel {
                 }
             }
             Self::Hysteria2 { server_name, .. } => {
-                let sn = server_name.trim();
-                if sn.is_empty() || sn.contains('/') || sn.chars().any(char::is_whitespace) {
+                if !valid_server_name(server_name) {
                     bail!("invalid hysteria2 server name: {server_name}");
                 }
             }
@@ -455,8 +454,7 @@ impl DesiredTunnel {
                 congestion_control,
                 ..
             } => {
-                let sn = server_name.trim();
-                if sn.is_empty() || sn.contains('/') || sn.chars().any(char::is_whitespace) {
+                if !valid_server_name(server_name) {
                     bail!("invalid tuic server name: {server_name}");
                 }
                 if !matches!(congestion_control.as_str(), "bbr" | "cubic" | "new_reno") {
@@ -464,14 +462,12 @@ impl DesiredTunnel {
                 }
             }
             Self::VlessReality { server_name, .. } => {
-                let sn = server_name.trim();
-                if sn.is_empty() || sn.contains('/') || sn.chars().any(char::is_whitespace) {
+                if !valid_server_name(server_name) {
                     bail!("invalid vless reality server name: {server_name}");
                 }
             }
             Self::AnytlsReality { server_name, .. } => {
-                let sn = server_name.trim();
-                if sn.is_empty() || sn.contains('/') || sn.chars().any(char::is_whitespace) {
+                if !valid_server_name(server_name) {
                     bail!("invalid anytls reality server name: {server_name}");
                 }
             }
@@ -575,5 +571,88 @@ impl DesiredTunnel {
             }
         }
         Ok(())
+    }
+}
+
+fn valid_server_name(value: &str) -> bool {
+    if value.is_empty() || value.len() > 253 {
+        return false;
+    }
+    let labels: Vec<&str> = value.split('.').collect();
+    if labels.len() <= 4
+        && labels
+            .iter()
+            .all(|label| !label.is_empty() && label.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return false;
+    }
+    labels.iter().all(|label| {
+        (1..=63).contains(&label.len())
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DesiredTunnel;
+
+    fn sample_tunnel(kind: &str, server_name: &str) -> DesiredTunnel {
+        let base = serde_json::json!({
+            "id": "tunnel_1",
+            "name": "edge-in",
+            "type": kind,
+            "listen": "::",
+            "port": 8443,
+            "serverName": server_name
+        });
+        serde_json::from_value(base).unwrap()
+    }
+
+    #[test]
+    fn validates_strict_server_name_hostnames() {
+        for kind in ["hysteria2", "tuic", "vless-reality", "anytls-reality"] {
+            assert!(sample_tunnel(kind, "www.bing.com").validate().is_ok());
+            assert!(
+                sample_tunnel(kind, "sub-1.a2.example.org")
+                    .validate()
+                    .is_ok()
+            );
+        }
+
+        let too_long = format!("{}.com", vec!["aaaa"; 51].join("."));
+        assert!(too_long.len() > 253);
+        let label_too_long = format!("{}.com", "a".repeat(64));
+
+        for invalid in [
+            "",
+            "   ",
+            "www .bing.com",
+            " www.bing.com",
+            "https://www.bing.com",
+            "www.bing.com/path",
+            "www.bing.com:443",
+            "1.2.3.4",
+            "192.168.1.1",
+            "::1",
+            "[::1]",
+            "bad_host.example.com",
+            "-bad.example.com",
+            "bad-.example.com",
+            "www.bing.com.",
+            "a..b.com",
+            &too_long,
+            &label_too_long,
+        ] {
+            for kind in ["hysteria2", "tuic", "vless-reality", "anytls-reality"] {
+                assert!(
+                    sample_tunnel(kind, invalid).validate().is_err(),
+                    "expected {kind} to reject serverName {invalid:?}"
+                );
+            }
+        }
     }
 }

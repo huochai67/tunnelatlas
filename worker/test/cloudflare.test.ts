@@ -11,6 +11,7 @@ class FakeD1 {
   nodes = new Map<string, Row>();
   tunnels = new Map<string, Row>();
   frontends = new Map<string, Row>();
+  hops: Row[] = [];
   calls: Array<{ sql: string; values: unknown[] }> = [];
   changes = 1;
 
@@ -89,6 +90,20 @@ class FakeD1 {
   }
 
   private all(sql: string, values: unknown[]): Row[] {
+    if (sql.includes("FROM tunnel_hops WHERE hop_node_id")) {
+      const where = this.whereOf(sql);
+      const matched = this.hops.filter((row) => this.matches(where, values, row));
+      if (sql.includes("SELECT DISTINCT entry_node_id")) {
+        const seen = new Set<string>();
+        return matched.filter((row) => {
+          const entryId = String(row.entry_node_id);
+          if (seen.has(entryId)) return false;
+          seen.add(entryId);
+          return true;
+        });
+      }
+      return matched;
+    }
     const table = this.tableFor(sql);
     if (!table) return [];
     const where = this.whereOf(sql);
@@ -162,6 +177,11 @@ class FakeD1 {
         }
       }
       return 1;
+    }
+    if (sql.includes("UPDATE nodes SET config_version = config_version + 1 WHERE id = ?")) {
+      const node = this.nodes.get(String(values[0]));
+      if (node) node.config_version = Number(node.config_version ?? 0) + 1;
+      return this.changes;
     }
     if (sql.includes("UPDATE nodes")) return this.changes;
     throw new Error(`unsupported run: ${sql}`);
@@ -743,6 +763,57 @@ describe("Agent report reconciliation", () => {
     expect(row?.status).toBe("error");
     expect(String(row?.last_error)).toContain("upstream exploded");
     expect(row?.dns_record_id).toBe("dns_1");
+    cf.restore();
+  });
+});
+
+describe("Cloudflare frontend hop version bumping", () => {
+  it("bumps dependent entry nodes when provisioning or deprovisioning via admin API", async () => {
+    const db = new FakeD1();
+    seedTunnel(db);
+    db.nodes.set("node_entry", { id: "node_entry", config_version: 1 });
+    db.hops.push({ entry_node_id: "node_entry", hop_node_id: "node_one", hop_tunnel_id: "inbound-1" });
+    const cf = mockCloudflare(happyPathHandler());
+
+    const putRes = await worker.fetch(adminRequest(frontendPath(), "PUT"), envFor(db));
+    expect(putRes.status).toBe(200);
+    expect(db.nodes.get("node_entry")?.config_version).toBe(2);
+
+    const delRes = await worker.fetch(adminRequest(frontendPath(), "DELETE"), envFor(db));
+    expect(delRes.status).toBe(200);
+    expect(db.nodes.get("node_entry")?.config_version).toBe(3);
+    cf.restore();
+  });
+
+  it("bumps dependent entry nodes during agent report reprovision and deprovision reconciliation", async () => {
+    const db = new FakeD1();
+    const hostname = await tunnelHostname();
+    seedFrontend(db, {
+      hostname,
+      dns_record_id: "dns_1",
+      config_ruleset_id: "cfg_ruleset_1",
+      config_rule_id: "cfg_rule_1",
+      origin_ruleset_id: "org_ruleset_1",
+      origin_rule_id: "org_rule_1",
+    });
+    db.nodes.set("node_entry", { id: "node_entry", config_version: 1 });
+    db.hops.push({ entry_node_id: "node_entry", hop_node_id: "node_one", hop_tunnel_id: "inbound-1" });
+    const cf = mockCloudflare(happyPathHandler());
+    const { ctx, drain } = testContext();
+
+    const reprovisionReq = await signedReport(db, [vmessReportTunnel("203.0.113.9:10086")], 1);
+    const reprovisionRes = await worker.fetch(reprovisionReq, envFor(db), ctx);
+    expect(reprovisionRes.status).toBe(200);
+    const versionBeforeReprovisionDrain = Number(db.nodes.get("node_entry")?.config_version);
+    await drain();
+    expect(db.nodes.get("node_entry")?.config_version).toBe(versionBeforeReprovisionDrain + 1);
+
+    const versionBeforeDeprovisionDrain = Number(db.nodes.get("node_entry")?.config_version);
+    const deprovisionReq = await signedReport(db, [], 2);
+    const deprovisionRes = await worker.fetch(deprovisionReq, envFor(db), ctx);
+    expect(deprovisionRes.status).toBe(200);
+    await drain();
+    expect(db.nodes.get("node_entry")?.config_version).toBe(versionBeforeDeprovisionDrain + 1);
     cf.restore();
   });
 });

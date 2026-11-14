@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { validServerName } from "../src/endpoints";
 import {
   desiredTunnelFromRow,
   validateEnrollment,
@@ -147,6 +148,50 @@ describe("tunnel config input validation and normalization", () => {
   it("rejects invalid tunnel port", () => {
     expect(() => validateTunnelConfigInput({ name: "ss", type: "shadowsocks", port: 0 })).toThrow("Invalid tunnel port");
     expect(() => validateTunnelConfigInput({ name: "ss", type: "shadowsocks", port: 70000 })).toThrow("Invalid tunnel port");
+  });
+
+  it("validates strict serverName hostnames across TLS and Reality types", () => {
+    for (const type of ["hysteria2", "tuic", "vless-reality", "anytls-reality"] as const) {
+      expect(validateTunnelConfigInput({
+        name: "tls-in",
+        type,
+        port: 8443,
+        serverName: "  sub-1.a2.example.org  ",
+      }).options.serverName).toBe("sub-1.a2.example.org");
+    }
+
+    const tooLong = `${new Array(51).fill("aaaa").join(".")}.com`;
+    expect(tooLong.length).toBeGreaterThan(253);
+    const labelTooLong = `${"a".repeat(64)}.com`;
+
+    for (const invalid of [
+      "",
+      "   ",
+      "https://www.bing.com",
+      "www.bing.com/path",
+      "www.bing.com:443",
+      "1.2.3.4",
+      "192.168.1.1",
+      "::1",
+      "[::1]",
+      "www .bing.com",
+      "bad_host.example.com",
+      "-bad.example.com",
+      "bad-.example.com",
+      "www.bing.com.",
+      tooLong,
+      labelTooLong,
+    ]) {
+      expect(validServerName(invalid)).toBe(false);
+      for (const type of ["hysteria2", "tuic", "vless-reality", "anytls-reality"] as const) {
+        expect(() => validateTunnelConfigInput({
+          name: "tls-in",
+          type,
+          port: 8443,
+          serverName: invalid,
+        })).toThrow("Invalid server name");
+      }
+    }
   });
 
   it("rejects invalid listen address and invalid public host", () => {

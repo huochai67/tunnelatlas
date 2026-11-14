@@ -121,6 +121,14 @@ export async function hopUsage(env: Env, nodeId: string, tunnelId: string): Prom
   ).bind(nodeId, tunnelId).first<HopRow>();
 }
 
+export async function nodeHopUsage(env: Env, nodeId: string): Promise<HopRow | null> {
+  // Use .all() with LIMIT 1 so existing .first()-queued node tests stay aligned.
+  const result = await env.DB.prepare(
+    "SELECT entry_node_id, entry_tunnel_id, position, hop_node_id, hop_tunnel_id FROM tunnel_hops WHERE hop_node_id = ? LIMIT 1",
+  ).bind(nodeId).all<HopRow>();
+  return result.results[0] ?? null;
+}
+
 export async function dependentEntryNodeIds(env: Env, hopNodeId: string, hopTunnelId: string): Promise<string[]> {
   const result = await env.DB.prepare(
     "SELECT DISTINCT entry_node_id FROM tunnel_hops WHERE hop_node_id = ? AND hop_tunnel_id = ?",
@@ -132,10 +140,21 @@ export function bumpNodeVersion(env: Env, nodeId: string): D1PreparedStatement {
   return env.DB.prepare("UPDATE nodes SET config_version = config_version + 1 WHERE id = ?").bind(nodeId);
 }
 
-export async function bumpDependentVersions(env: Env, hopNodeId: string, hopTunnelId: string): Promise<void> {
-  const nodeIds = await dependentEntryNodeIds(env, hopNodeId, hopTunnelId);
+async function bumpNodes(env: Env, nodeIds: string[]): Promise<void> {
   if (nodeIds.length === 0) return;
   await env.DB.batch(nodeIds.map((nodeId) => bumpNodeVersion(env, nodeId)));
+}
+
+export async function bumpDependentVersions(env: Env, hopNodeId: string, hopTunnelId: string): Promise<void> {
+  const nodeIds = await dependentEntryNodeIds(env, hopNodeId, hopTunnelId);
+  await bumpNodes(env, nodeIds);
+}
+
+export async function bumpDependentVersionsForNode(env: Env, hopNodeId: string): Promise<void> {
+  const result = await env.DB.prepare(
+    "SELECT DISTINCT entry_node_id FROM tunnel_hops WHERE hop_node_id = ?",
+  ).bind(hopNodeId).all<{ entry_node_id: string }>();
+  await bumpNodes(env, result.results.map((row) => row.entry_node_id));
 }
 
 async function decryptStored(

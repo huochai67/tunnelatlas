@@ -1,6 +1,7 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path, time::Duration};
 
 use anyhow::{Context, Result, bail};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 fn default_report_interval() -> u64 {
@@ -131,6 +132,14 @@ impl Config {
         }
         Ok(())
     }
+
+    pub fn jittered_report_delay(&self, rng: &mut (impl Rng + ?Sized)) -> Duration {
+        let base_ms = self.report_interval_seconds.saturating_mul(1_000);
+        let jitter_range_ms = base_ms / 10;
+        let min_ms = base_ms.saturating_sub(jitter_range_ms).max(1_000);
+        let max_ms = base_ms.saturating_add(jitter_range_ms);
+        Duration::from_millis(rng.gen_range(min_ms..=max_ms))
+    }
 }
 
 pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -208,5 +217,26 @@ singBox: {}
 "#;
         let config: Config = serde_yaml::from_str(short_interval).unwrap();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn jittered_report_delay_stays_within_ten_percent() {
+        use rand::{SeedableRng, rngs::StdRng};
+
+        let yaml = r#"
+serverUrl: https://example.com
+reportIntervalSeconds: 60
+singBox: {}
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut observed = std::collections::BTreeSet::new();
+        for _ in 0..64 {
+            let delay = config.jittered_report_delay(&mut rng);
+            let ms = delay.as_millis();
+            assert!((54_000..=66_000).contains(&ms), "unexpected delay: {ms}ms");
+            observed.insert(ms);
+        }
+        assert!(observed.len() > 1, "expected randomized delays");
     }
 }

@@ -4,11 +4,12 @@ import {
   type CloudflareFrontendRow, ConfigError, ProviderError,
 } from "./cloudflare";
 import { encryptCredentials, generateProtocolCredentials } from "./credentials";
-import { decryptJson, encryptJson, randomId, randomToken, sha256Hex } from "./crypto";
+import { decryptJson, encryptJson, randomId, randomToken, sha256Hex, timingSafeEqualStrings } from "./crypto";
 import { externallyReachableEndpoint, observedAddress, validFrontendAddress } from "./endpoints";
 import {
   assertHopGraph,
   bumpDependentVersions,
+  bumpDependentVersionsForNode,
   bumpNodeVersion,
   hopRefsEqual,
   hopReplaceStatements,
@@ -16,6 +17,7 @@ import {
   hostedClientView,
   loadDesiredTunnels,
   loadHopRefs,
+  nodeHopUsage,
 } from "./hops";
 import { bearer, HttpError, json, problem, readJson } from "./http";
 import { encodeSubscription, type SubscriptionTunnel } from "./subscription";
@@ -37,8 +39,11 @@ interface EnrollmentToken {
   expiresAt: string;
 }
 
-function requireToken(request: Request, expected: string): void {
-  if (!expected || bearer(request) !== expected) throw new HttpError(401, "Invalid bearer token");
+async function requireToken(request: Request, expected: string): Promise<void> {
+  const token = bearer(request);
+  if (!expected || !token || !(await timingSafeEqualStrings(token, expected))) {
+    throw new HttpError(401, "Invalid bearer token");
+  }
 }
 
 function resourceId(value: string): string {
@@ -127,7 +132,7 @@ async function publicFrontendState(env: Env, nodeId: string, tunnelId: string): 
 async function provisionCloudflare(
   request: Request, env: Env, encodedNodeId: string, encodedTunnelId: string,
 ): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const tunnelId = tunnelIdParam(encodedTunnelId);
   const zoneName = env.CLOUDFLARE_ZONE_NAME;
@@ -164,15 +169,17 @@ async function provisionCloudflare(
   try {
     await provisionFrontend(env, { nodeId, tunnelId, operationId, target });
   } catch (error) {
+    await bumpDependentVersions(env, nodeId, tunnelId).catch(() => {});
     throw cloudflareStatus(error);
   }
+  await bumpDependentVersions(env, nodeId, tunnelId);
   return json({ frontend: await publicFrontendState(env, nodeId, tunnelId) });
 }
 
 async function deprovisionCloudflare(
   request: Request, env: Env, encodedNodeId: string, encodedTunnelId: string,
 ): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const tunnelId = tunnelIdParam(encodedTunnelId);
   const row = await env.DB.prepare("SELECT * FROM tunnel_cloudflare_frontends WHERE node_id = ? AND tunnel_id = ?")
@@ -182,8 +189,10 @@ async function deprovisionCloudflare(
   try {
     await deprovisionFrontend(env, row, operationId);
   } catch (error) {
+    await bumpDependentVersions(env, nodeId, tunnelId).catch(() => {});
     throw cloudflareStatus(error);
   }
+  await bumpDependentVersions(env, nodeId, tunnelId);
   return json({ deleted: true, nodeId, tunnelId });
 }
 
@@ -213,7 +222,7 @@ async function enrollmentToken(env: Env): Promise<EnrollmentToken> {
 }
 
 async function createNode(request: Request, env: Env): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const body = await readJson<{ name: string }>(request);
   const name = body && typeof body.name === "string" ? body.name.trim() : "";
   if (!name || name.length > 255) throw new HttpError(400, "Invalid node name");
@@ -234,7 +243,7 @@ async function createNode(request: Request, env: Env): Promise<Response> {
 }
 
 async function createEnrollmentToken(request: Request, env: Env, encodedNodeId: string): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const node = await env.DB.prepare("SELECT id, public_key FROM nodes WHERE id = ?").bind(nodeId)
     .first<{ id: string; public_key: string | null }>();
@@ -259,7 +268,7 @@ async function createEnrollmentToken(request: Request, env: Env, encodedNodeId: 
 }
 
 async function resetEnrollment(request: Request, env: Env, encodedNodeId: string): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const node = await env.DB.prepare("SELECT id, name, public_key FROM nodes WHERE id = ?").bind(nodeId)
     .first<{ id: string; name: string; public_key: string | null }>();
@@ -288,6 +297,7 @@ async function resetEnrollment(request: Request, env: Env, encodedNodeId: string
   if (Number(results[0]?.meta.changes ?? 0) !== 1 || Number(results[3]?.meta.changes ?? 0) !== 1) {
     throw new HttpError(409, "Node enrollment state changed");
   }
+  await bumpDependentVersionsForNode(env, nodeId);
   return json({
     node: { id: node.id, name: node.name, connectionStatus: "pending" },
     token: enrollment.token,
@@ -354,7 +364,7 @@ async function createTunnelConfig(
   env: Env,
   encodedNodeId: string,
 ): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const body = await readJson(request);
   const validated = validateTunnelConfigInput(body);
@@ -437,7 +447,7 @@ async function updateTunnelConfig(
   encodedNodeId: string,
   encodedTunnelId: string,
 ): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const tunnelId = tunnelIdParam(encodedTunnelId);
   const body = await readJson(request);
@@ -547,7 +557,7 @@ async function updateTunnelSubscription(
   encodedNodeId: string,
   encodedTunnelId: string,
 ): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const tunnelId = tunnelIdParam(encodedTunnelId);
   const body = await readJson(request);
@@ -578,7 +588,7 @@ async function rotateTunnelCredentials(
   encodedNodeId: string,
   encodedTunnelId: string,
 ): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const tunnelId = tunnelIdParam(encodedTunnelId);
 
@@ -622,7 +632,7 @@ async function deleteTunnelConfig(
   encodedNodeId: string,
   encodedTunnelId: string,
 ): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
   const tunnelId = tunnelIdParam(encodedTunnelId);
 
@@ -663,8 +673,11 @@ async function deleteTunnelConfig(
 }
 
 async function deleteNode(request: Request, env: Env, encodedNodeId: string): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const nodeId = resourceId(encodedNodeId);
+  if (await nodeHopUsage(env, nodeId)) {
+    throw new HttpError(409, "Node has tunnels used as next hops");
+  }
   await deprovisionAllFrontends(env, nodeId);
   const deleted = await env.DB.prepare("DELETE FROM nodes WHERE id = ? RETURNING id, name")
     .bind(nodeId).first<{ id: string; name: string }>();
@@ -724,6 +737,7 @@ async function reconcileReprovision(
       `UPDATE tunnel_cloudflare_frontends SET status = 'active', operation_id = NULL, updated_at = ?
        WHERE node_id = ? AND tunnel_id = ? AND operation_id = ?`
     ).bind(new Date().toISOString(), row.node_id, row.tunnel_id, operationId).run();
+    await bumpDependentVersions(env, row.node_id, row.tunnel_id);
     return;
   }
 
@@ -750,11 +764,13 @@ async function reconcileReprovision(
       metadata: JSON.parse(tunnel.metadata_json),
     });
     await provisionFrontend(env, { nodeId: row.node_id, tunnelId: row.tunnel_id, operationId, target });
+    await bumpDependentVersions(env, row.node_id, row.tunnel_id);
   } catch (error) {
     await env.DB.prepare(
       `UPDATE tunnel_cloudflare_frontends SET status = 'error', operation_id = NULL, last_error = ?, updated_at = ?
        WHERE node_id = ? AND tunnel_id = ? AND operation_id = ?`,
     ).bind(providerMessage(error), new Date().toISOString(), row.node_id, row.tunnel_id, operationId).run();
+    await bumpDependentVersions(env, row.node_id, row.tunnel_id);
   }
 }
 
@@ -764,6 +780,7 @@ async function deprovisionWithLease(env: Env, row: CloudflareFrontendRow, operat
   } catch (error) {
     console.error("cloudflare deprovision failed", error);
   }
+  await bumpDependentVersions(env, row.node_id, row.tunnel_id);
 }
 
 async function reconcileDeprovision(
@@ -784,6 +801,7 @@ async function reconcileDeprovision(
       `UPDATE tunnel_cloudflare_frontends SET status = 'active', operation_id = NULL, updated_at = ?
        WHERE node_id = ? AND tunnel_id = ? AND operation_id = ?`
     ).bind(new Date().toISOString(), row.node_id, row.tunnel_id, operationId).run();
+    await bumpDependentVersions(env, row.node_id, row.tunnel_id);
     return;
   }
 
@@ -806,6 +824,7 @@ async function reconcileDeprovision(
         `UPDATE tunnel_cloudflare_frontends SET status = 'active', operation_id = NULL, updated_at = ?
          WHERE node_id = ? AND tunnel_id = ? AND operation_id = ?`,
       ).bind(new Date().toISOString(), row.node_id, row.tunnel_id, operationId).run();
+      await bumpDependentVersions(env, row.node_id, row.tunnel_id);
       return;
     } catch {
       // invalid target reappeared; proceed to deprovision
@@ -1181,7 +1200,12 @@ function publicTunnelQuery(filter: boolean, onlineOnly: boolean, subscriptionOnl
 
 async function listTunnels(request: Request, env: Env): Promise<Response> {
   const token = bearer(request);
-  if (!token || (token !== env.READ_TOKEN && token !== env.ADMIN_TOKEN)) throw new HttpError(401, "Invalid bearer token");
+  if (!token) throw new HttpError(401, "Invalid bearer token");
+  const [matchesRead, matchesAdmin] = await Promise.all([
+    env.READ_TOKEN ? timingSafeEqualStrings(token, env.READ_TOKEN) : Promise.resolve(false),
+    env.ADMIN_TOKEN ? timingSafeEqualStrings(token, env.ADMIN_TOKEN) : Promise.resolve(false),
+  ]);
+  if (!matchesRead && !matchesAdmin) throw new HttpError(401, "Invalid bearer token");
   const url = new URL(request.url);
   const nodeId = url.searchParams.get("nodeId");
   const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
@@ -1198,7 +1222,15 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const queryTokens = url.searchParams.getAll("token");
   const queryToken = queryTokens.length === 1 ? queryTokens[0] : null;
-  if (!env.READ_TOKEN || (bearer(request) !== env.READ_TOKEN && queryToken !== env.READ_TOKEN)) {
+  const headerToken = bearer(request);
+  if (!env.READ_TOKEN || (!headerToken && !queryToken)) {
+    throw new HttpError(401, "Invalid subscription token");
+  }
+  const [headerValid, queryValid] = await Promise.all([
+    headerToken ? timingSafeEqualStrings(headerToken, env.READ_TOKEN) : Promise.resolve(false),
+    queryToken ? timingSafeEqualStrings(queryToken, env.READ_TOKEN) : Promise.resolve(false),
+  ]);
+  if (!headerValid && !queryValid) {
     throw new HttpError(401, "Invalid subscription token");
   }
   const nodeId = url.searchParams.get("nodeId");
@@ -1232,7 +1264,7 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
 }
 
 async function adminOverview(request: Request, env: Env): Promise<Response> {
-  requireToken(request, env.ADMIN_TOKEN);
+  await requireToken(request, env.ADMIN_TOKEN);
   const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
   const now = Date.now();
 
@@ -1248,7 +1280,6 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
        n.name AS node_name, n.config_version, n.applied_config_version,
        t.status AS observed_status, t.endpoint AS observed_endpoint,
        t.metadata_json AS observed_metadata_json,
-       t.authentication_ciphertext AS observed_authentication_ciphertext,
        t.last_seen_at AS observed_last_seen_at,
        cf.hostname AS cf_hostname, cf.status AS cf_status,
        cf.source_endpoint AS cf_source_endpoint, cf.source_path AS cf_source_path,
@@ -1261,7 +1292,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
     ).all<Record<string, unknown>>(),
     env.DB.prepare(
       `SELECT t.id, t.node_id, t.name, t.kind, t.endpoint, t.protocol, t.status,
-       t.metadata_json, t.authentication_ciphertext, t.last_seen_at,
+       t.metadata_json, t.last_seen_at,
        t.subscription_enabled, n.name AS node_name,
        cf.hostname AS cf_hostname, cf.status AS cf_status,
        cf.source_endpoint AS cf_source_endpoint, cf.source_path AS cf_source_path,
@@ -1269,7 +1300,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
        FROM tunnels t
        JOIN nodes n ON n.id = t.node_id
        LEFT JOIN tunnel_configs tc ON tc.node_id = t.node_id AND tc.id = t.id
-       LEFT JOIN tunnel_cloudflare_frontends cf ON cf.node_id = t.node_id AND cf.tunnel_id = t.id
+       LEFT JOIN tunnel_cloudflare_frontends cf ON cf.node_id = tc.node_id AND cf.tunnel_id = tc.id
        WHERE n.applied_config_version IS NULL AND tc.id IS NULL
        ORDER BY n.name, t.name LIMIT 1000`
     ).all<Record<string, unknown>>(),
@@ -1293,11 +1324,8 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
     hopsByEntry.set(key, list);
   }
 
-  const managedTunnels = await Promise.all(desiredResult.results.map(async (row) => {
+  const managedTunnels = desiredResult.results.map((row) => {
     const options = JSON.parse(String(row.options_json || "{}")) as Record<string, unknown>;
-    const authentication = row.observed_authentication_ciphertext
-      ? await decryptJson(String(row.observed_authentication_ciphertext), env.CREDENTIALS_KEY, `${row.node_id}:${row.id}`)
-      : {};
     const cloudflare: CloudflareFrontendState | null = row.cf_hostname ? {
       hostname: String(row.cf_hostname),
       status: String(row.cf_status),
@@ -1325,16 +1353,12 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
       status: row.observed_status ? String(row.observed_status) : "pending",
       endpoint: row.observed_endpoint ? String(row.observed_endpoint) : "",
       metadata: row.observed_metadata_json ? JSON.parse(String(row.observed_metadata_json)) : {},
-      authentication,
       lastSeenAt: row.observed_last_seen_at ? String(row.observed_last_seen_at) : null,
       cloudflare,
     };
-  }));
+  });
 
-  const legacyTunnels = await Promise.all(legacyResult.results.map(async (row) => {
-    const authentication = row.authentication_ciphertext
-      ? await decryptJson(String(row.authentication_ciphertext), env.CREDENTIALS_KEY, `${row.node_id}:${row.id}`)
-      : {};
+  const legacyTunnels = legacyResult.results.map((row) => {
     const cloudflare: CloudflareFrontendState | null = row.cf_hostname ? {
       hostname: String(row.cf_hostname),
       status: String(row.cf_status),
@@ -1355,12 +1379,11 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
       endpoint: String(row.endpoint),
       status: String(row.status),
       metadata: JSON.parse(String(row.metadata_json)),
-      authentication,
       lastSeenAt: String(row.last_seen_at),
       subscriptionEnabled: Boolean(row.subscription_enabled),
       cloudflare,
     };
-  }));
+  });
 
   const allTunnels = [...managedTunnels, ...legacyTunnels];
 

@@ -57,6 +57,30 @@ export async function decryptJson(value: string, secret: string, context: string
   return JSON.parse(new TextDecoder().decode(plaintext)) as unknown;
 }
 
+type TimingSafeSubtle = SubtleCrypto & {
+  timingSafeEqual?: (a: Uint8Array, b: Uint8Array) => boolean;
+};
+
+/** Compare two strings in constant time by hashing both to fixed-length digests. */
+export async function timingSafeEqualStrings(actual: string, expected: string): Promise<boolean> {
+  const [actualDigest, expectedDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(actual)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  const a = new Uint8Array(actualDigest);
+  const b = new Uint8Array(expectedDigest);
+  const subtle = crypto.subtle as TimingSafeSubtle;
+  if (typeof subtle.timingSafeEqual === "function") {
+    return subtle.timingSafeEqual(a, b);
+  }
+  let diff = a.length ^ b.length;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i += 1) {
+    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  }
+  return diff === 0;
+}
+
 export function randomToken(bytes = 32): string {
   const value = new Uint8Array(bytes);
   crypto.getRandomValues(value);
