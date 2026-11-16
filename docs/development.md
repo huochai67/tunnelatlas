@@ -51,6 +51,20 @@ cargo run -p tunnelatlasd -- \
 
 注册成功后应从配置文件删除一次性 `enrollmentToken`。服务模式使用 `run` 子命令；参考 `deploy/tunnelatlas.service`。不要同时运行发行版自带的 `sing-box.service`，否则两个 supervisor 会争用端口。
 
+### 本地 sing-box 扩展配置（Overlay）
+
+若单台节点需要接入局域网/本地自定义出站并做站内分流（例如将 AI 网站流量分流至局域网 VLESS 出口），无需改动 Worker 中控：只需在节点 `config.yaml` 的 `singBox` 下配置可选字段 `extraConfigPath`（示例模板见 `agent/extra-config.ai-vless.example.json`）：
+
+```yaml
+singBox:
+  extraConfigPath: /etc/tunnelatlas/extra-sing-box.json
+```
+
+合并规则如下：
+- 仅允许顶层字段 `outbounds`、`endpoints`、`route`、`dns`、`experimental`；禁止定义 `inbounds`，且保留出站标签 `direct`、`block` 与 `hop-*`。
+- 由中控下发的 `hops` 链式路由规则始终排在最前；未配置 `hops` 的直连隧道会按顺序匹配本地 `route.rules`，未命中时默认回落到 `final: "direct"`（除非本地显式指定其他合法 `final`）。
+- 修改 `extraConfigPath` 指向的文件后，先执行 `sudo tunnelatlasd config check` 校验语法与合并结果，再执行 `sudo tunnelatlasd service restart` 生效。
+
 ## 升级与发布顺序
 
 从本地 authoring 模型升级到 Worker 托管模型时：

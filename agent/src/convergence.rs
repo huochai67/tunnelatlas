@@ -150,12 +150,20 @@ pub async fn converge(
         return Err((ConfigApplyErrorCode::LocalApplyFailed, err));
     }
 
-    let rendered = match render::render_desired(
+    let extra_config_path = config
+        .sing_box
+        .extra_config_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(Path::new);
+    let rendered = match render::render_desired_with_overlay(
         &desired.tunnels,
         &staged_secrets,
         &certs_path,
         observed_address,
         "healthy",
+        extra_config_path,
     ) {
         Ok(r) => r,
         Err(err) => {

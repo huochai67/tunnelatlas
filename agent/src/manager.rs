@@ -55,6 +55,16 @@ pub async fn config(command: ConfigCommand, config_path: &Path) -> Result<()> {
 pub async fn check(config_path: &Path) -> Result<()> {
     let config = Config::load(config_path)?;
     config.validate()?;
+    let extra_config_path = config
+        .sing_box
+        .extra_config_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(Path::new);
+    if let Some(extra_path) = extra_config_path {
+        render::validate_extra_config(extra_path)?;
+    }
     let runtime_path = Path::new(&config.runtime_path);
     if let Ok(RuntimeState {
         applied_desired_config: Some(desired),
@@ -66,12 +76,13 @@ pub async fn check(config_path: &Path) -> Result<()> {
         let secrets_path = Path::new(&config.sing_box.secrets_path);
         let secrets = SecretStore::load(secrets_path)?;
         let certs_dir = Path::new(&config.sing_box.certificates_directory);
-        let rendered = render::render_desired(
+        let rendered = render::render_desired_with_overlay(
             &desired.tunnels,
             &secrets,
             certs_dir,
             observed_address.as_deref(),
             "healthy",
+            extra_config_path,
         )?;
         let supervisor = SingBoxSupervisor::new(config.sing_box.clone());
         supervisor.validate(&rendered.bytes).await?;
@@ -473,6 +484,7 @@ mod tests {
                     .join("sing-box.json")
                     .to_string_lossy()
                     .into(),
+                extra_config_path: None,
                 secrets_path: directory
                     .path()
                     .join("secrets.json")
@@ -495,5 +507,68 @@ mod tests {
         let before = fs::read(&config_path).unwrap();
         check(&config_path).await.unwrap();
         assert_eq!(fs::read(&config_path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn check_validates_extra_config_even_without_runtime_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("sing-box");
+        fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let overlay_path = directory.path().join("extra.json");
+        let config_path = directory.path().join("config.yaml");
+        let config = Config {
+            server_url: "https://example.com".into(),
+            enrollment_token: None,
+            report_interval_seconds: 60,
+            labels: BTreeMap::new(),
+            runtime_path: directory
+                .path()
+                .join("runtime.json")
+                .to_string_lossy()
+                .into(),
+            sing_box: crate::config::SingBoxSettings {
+                binary_path: binary.to_string_lossy().into(),
+                managed_config_path: directory
+                    .path()
+                    .join("sing-box.json")
+                    .to_string_lossy()
+                    .into(),
+                extra_config_path: Some(overlay_path.to_string_lossy().into()),
+                secrets_path: directory
+                    .path()
+                    .join("secrets.json")
+                    .to_string_lossy()
+                    .into(),
+                certificates_directory: directory
+                    .path()
+                    .join("certificates")
+                    .to_string_lossy()
+                    .into(),
+                working_directory: None,
+                restart_delay_seconds: 1,
+                shutdown_timeout_seconds: 1,
+            },
+            public_host: None,
+            protocols: None,
+        };
+        config.save(&config_path).unwrap();
+
+        // Missing overlay file fails check
+        assert!(check(&config_path).await.is_err());
+
+        // Malformed / disallowed overlay fails check
+        fs::write(&overlay_path, r#"{"inbounds":[]}"#).unwrap();
+        assert!(check(&config_path).await.is_err());
+
+        // Valid overlay passes check even before first runtime convergence
+        fs::write(
+            &overlay_path,
+            include_str!("../extra-config.ai-vless.example.json"),
+        )
+        .unwrap();
+        check(&config_path).await.unwrap();
     }
 }

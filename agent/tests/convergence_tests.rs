@@ -378,3 +378,75 @@ async fn empty_desired_config_keeps_readiness_without_child() {
     };
     assert!(!expects_child);
 }
+
+#[tokio::test]
+async fn converge_merges_extra_config_and_rolls_back_when_invalid() {
+    let temp = tempfile::tempdir().unwrap();
+    let binary = create_mock_singbox(temp.path(), false);
+    let (mut config, config_path) = test_config(temp.path(), &binary);
+    let overlay_path = temp.path().join("extra.json");
+    fs::write(
+        &overlay_path,
+        include_str!("../extra-config.ai-vless.example.json"),
+    )
+    .unwrap();
+    config.sing_box.extra_config_path = Some(overlay_path.to_string_lossy().into());
+    config.save(&config_path).unwrap();
+
+    let mut supervisor = SingBoxSupervisor::new(config.sing_box.clone());
+    let desired_v1 = DesiredConfig {
+        version: 1,
+        tunnels: vec![DesiredTunnel::Shadowsocks {
+            id: "tun_1".into(),
+            name: "ss-1".into(),
+            listen: "::".into(),
+            port: 8388,
+            public_host: None,
+            credential_generation: 1,
+            method: "2022-blake3-aes-128-gcm".into(),
+            credentials: None,
+            hops: vec![],
+        }],
+    };
+
+    let outcome = convergence::converge(
+        &mut config,
+        &config_path,
+        &desired_v1,
+        &mut supervisor,
+        Some("203.0.113.8"),
+    )
+    .await
+    .unwrap();
+    assert!(outcome.applied);
+
+    let managed_bytes = fs::read(&config.sing_box.managed_config_path).unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&managed_bytes).unwrap();
+    assert_eq!(doc["outbounds"][1]["tag"], "lan-ai-vless");
+    assert_eq!(doc["route"]["rules"][0]["action"], "sniff");
+    assert_eq!(doc["route"]["rules"][1]["outbound"], "lan-ai-vless");
+
+    // Corrupting the overlay on a subsequent convergence must fail with LocalApplyFailed
+    // and leave the previous managed config intact.
+    fs::write(&overlay_path, "{ not json").unwrap();
+    let desired_v2 = DesiredConfig {
+        version: 2,
+        tunnels: desired_v1.tunnels.clone(),
+    };
+    let err = convergence::converge(
+        &mut config,
+        &config_path,
+        &desired_v2,
+        &mut supervisor,
+        Some("203.0.113.8"),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.0, ConfigApplyErrorCode::LocalApplyFailed);
+    assert_eq!(
+        fs::read(&config.sing_box.managed_config_path).unwrap(),
+        managed_bytes
+    );
+
+    let _ = supervisor.stop().await;
+}

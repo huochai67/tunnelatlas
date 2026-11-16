@@ -251,12 +251,20 @@ async fn run(
         }
         if !cached.tunnels.is_empty() {
             let secrets = SecretStore::load(Path::new(&config.sing_box.secrets_path))?;
-            let rendered = render::render_desired(
+            let extra_config_path = config
+                .sing_box
+                .extra_config_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(Path::new);
+            let rendered = render::render_desired_with_overlay(
                 &cached.tunnels,
                 &secrets,
                 Path::new(&config.sing_box.certificates_directory),
                 runtime.observed_address.as_deref(),
                 "healthy",
+                extra_config_path,
             )?;
             supervisor.prepare(&rendered.bytes).await?;
             supervisor.start().await?;

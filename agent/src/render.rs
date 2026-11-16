@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::{collections::HashSet, fs, path::Path};
 
 use anyhow::{Context, Result, bail};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::{
     desired::{DesiredHop, DesiredTunnel},
@@ -14,6 +14,10 @@ pub struct RenderedConfig {
     pub tunnels: Vec<ObservedTunnel>,
 }
 
+pub fn validate_extra_config(path: &Path) -> Result<()> {
+    LocalOverlay::load(path).map(|_| ())
+}
+
 pub fn render_desired(
     tunnels: &[DesiredTunnel],
     secrets: &SecretStore,
@@ -21,11 +25,30 @@ pub fn render_desired(
     observed_address: Option<&str>,
     status: &str,
 ) -> Result<RenderedConfig> {
+    render_desired_with_overlay(
+        tunnels,
+        secrets,
+        certificates_dir,
+        observed_address,
+        status,
+        None,
+    )
+}
+
+pub fn render_desired_with_overlay(
+    tunnels: &[DesiredTunnel],
+    secrets: &SecretStore,
+    certificates_dir: &Path,
+    observed_address: Option<&str>,
+    status: &str,
+    extra_config_path: Option<&Path>,
+) -> Result<RenderedConfig> {
+    let overlay = extra_config_path.map(LocalOverlay::load).transpose()?;
     let mut inbounds = Vec::new();
     let mut observed_tunnels = Vec::new();
     let mut outbounds = vec![json!({ "type": "direct", "tag": "direct" })];
     let mut route_rules = Vec::new();
-    let mut needs_block = false;
+    let mut needs_block = overlay.as_ref().is_some_and(|extra| extra.needs_block);
 
     for tunnel in tunnels {
         let secret = secrets.get_desired(tunnel)?;
@@ -90,7 +113,9 @@ pub fn render_desired(
         "inbounds": inbounds,
         "outbounds": outbounds
     });
-    if !route_rules.is_empty() {
+    if let Some(extra) = overlay {
+        apply_overlay(&mut document, route_rules, extra);
+    } else if !route_rules.is_empty() {
         document["route"] = json!({
             "rules": route_rules,
             "final": "direct"
@@ -100,6 +125,202 @@ pub fn render_desired(
         bytes: serde_json::to_vec_pretty(&document)?,
         tunnels: observed_tunnels,
     })
+}
+
+struct LocalOverlay {
+    outbounds: Vec<Value>,
+    endpoints: Vec<Value>,
+    route: Option<Map<String, Value>>,
+    dns: Option<Value>,
+    experimental: Option<Value>,
+    needs_block: bool,
+}
+
+impl LocalOverlay {
+    fn load(path: &Path) -> Result<Self> {
+        let bytes = fs::read(path)
+            .with_context(|| format!("failed to read extra sing-box config {}", path.display()))?;
+        let root: Value = serde_json::from_slice(&bytes)
+            .with_context(|| format!("invalid JSON in extra sing-box config {}", path.display()))?;
+        let Value::Object(mut obj) = root else {
+            bail!("extra sing-box config root must be a JSON object");
+        };
+
+        if obj.contains_key("inbounds") {
+            bail!(
+                "extra sing-box config cannot define 'inbounds'; inbounds are managed by TunnelAtlas"
+            );
+        }
+        for key in obj.keys() {
+            if !matches!(
+                key.as_str(),
+                "outbounds" | "endpoints" | "route" | "dns" | "experimental"
+            ) {
+                bail!(
+                    "unsupported top-level key '{key}' in extra sing-box config; allowed keys are: outbounds, endpoints, route, dns, experimental"
+                );
+            }
+        }
+
+        let mut extra_tags = HashSet::new();
+        let outbounds = match obj.remove("outbounds") {
+            Some(value) => parse_tagged_entries(value, "outbounds", &mut extra_tags)?,
+            None => Vec::new(),
+        };
+        let endpoints = match obj.remove("endpoints") {
+            Some(value) => parse_tagged_entries(value, "endpoints", &mut extra_tags)?,
+            None => Vec::new(),
+        };
+
+        let mut needs_block = false;
+        let route = match obj.remove("route") {
+            Some(Value::Object(route_map)) => {
+                needs_block = validate_extra_route(&route_map, &extra_tags)?;
+                Some(route_map)
+            }
+            Some(_) => bail!("extra sing-box config 'route' must be a JSON object"),
+            None => None,
+        };
+
+        let dns = match obj.remove("dns") {
+            Some(value @ Value::Object(_)) => Some(value),
+            Some(_) => bail!("extra sing-box config 'dns' must be a JSON object"),
+            None => None,
+        };
+        let experimental = match obj.remove("experimental") {
+            Some(value @ Value::Object(_)) => Some(value),
+            Some(_) => bail!("extra sing-box config 'experimental' must be a JSON object"),
+            None => None,
+        };
+
+        Ok(Self {
+            outbounds,
+            endpoints,
+            route,
+            dns,
+            experimental,
+            needs_block,
+        })
+    }
+}
+
+fn parse_tagged_entries(
+    value: Value,
+    section: &str,
+    seen_tags: &mut HashSet<String>,
+) -> Result<Vec<Value>> {
+    let Value::Array(items) = value else {
+        bail!("extra sing-box config '{section}' must be a JSON array");
+    };
+    for item in &items {
+        let Some(map) = item.as_object() else {
+            bail!("each entry in extra sing-box config '{section}' must be a JSON object");
+        };
+        if map
+            .get("type")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            bail!("each entry in extra sing-box config '{section}' must have a non-empty 'type'");
+        }
+        let Some(tag) = map.get("tag").and_then(Value::as_str) else {
+            bail!("each entry in extra sing-box config '{section}' must have a non-empty 'tag'");
+        };
+        if tag.is_empty() {
+            bail!("each entry in extra sing-box config '{section}' must have a non-empty 'tag'");
+        }
+        if tag == "direct" || tag == "block" || tag.starts_with("hop-") {
+            bail!("extra tag '{tag}' is reserved by TunnelAtlas");
+        }
+        if !seen_tags.insert(tag.to_owned()) {
+            bail!("duplicate tag '{tag}' in extra sing-box config");
+        }
+    }
+    Ok(items)
+}
+
+fn validate_extra_route(
+    route_map: &Map<String, Value>,
+    extra_tags: &HashSet<String>,
+) -> Result<bool> {
+    let mut needs_block = false;
+    if let Some(rules_val) = route_map.get("rules") {
+        let Some(rules) = rules_val.as_array() else {
+            bail!("extra route.rules must be a JSON array");
+        };
+        for rule in rules {
+            let Some(rule_obj) = rule.as_object() else {
+                bail!("each entry in extra route.rules must be a JSON object");
+            };
+            if rule_obj.get("outbound").and_then(Value::as_str) == Some("block") {
+                needs_block = true;
+            }
+        }
+    }
+    if let Some(rule_sets_val) = route_map.get("rule_set") {
+        let Some(rule_sets) = rule_sets_val.as_array() else {
+            bail!("extra route.rule_set must be a JSON array");
+        };
+        let mut seen_rule_sets = HashSet::new();
+        for rule_set in rule_sets {
+            let Some(rs_obj) = rule_set.as_object() else {
+                bail!("each entry in extra route.rule_set must be a JSON object");
+            };
+            let Some(tag) = rs_obj.get("tag").and_then(Value::as_str) else {
+                bail!("each entry in extra route.rule_set must have a non-empty 'tag'");
+            };
+            if tag.is_empty() {
+                bail!("each entry in extra route.rule_set must have a non-empty 'tag'");
+            }
+            if !seen_rule_sets.insert(tag.to_owned()) {
+                bail!("duplicate rule_set tag '{tag}' in extra sing-box config");
+            }
+        }
+    }
+    if let Some(final_val) = route_map.get("final") {
+        let Some(final_tag) = final_val.as_str().filter(|s| !s.is_empty()) else {
+            bail!("extra route.final must be a non-empty string");
+        };
+        if final_tag == "block" {
+            needs_block = true;
+        }
+        if final_tag != "direct" && final_tag != "block" && !extra_tags.contains(final_tag) {
+            bail!("extra route.final references unknown outbound '{final_tag}'");
+        }
+    }
+    Ok(needs_block)
+}
+
+fn apply_overlay(document: &mut Value, mut route_rules: Vec<Value>, extra: LocalOverlay) {
+    if let Some(Value::Array(outbounds)) = document.get_mut("outbounds") {
+        outbounds.extend(extra.outbounds);
+    }
+    if !extra.endpoints.is_empty() {
+        document["endpoints"] = Value::Array(extra.endpoints);
+    }
+    if let Some(mut route_map) = extra.route {
+        if let Some(Value::Array(extra_rules)) = route_map.remove("rules") {
+            route_rules.extend(extra_rules);
+        }
+        if !route_rules.is_empty() {
+            route_map.insert("rules".to_owned(), Value::Array(route_rules));
+        }
+        if !route_map.contains_key("final") {
+            route_map.insert("final".to_owned(), json!("direct"));
+        }
+        document["route"] = Value::Object(route_map);
+    } else if !route_rules.is_empty() {
+        document["route"] = json!({
+            "rules": route_rules,
+            "final": "direct"
+        });
+    }
+    if let Some(dns) = extra.dns {
+        document["dns"] = dns;
+    }
+    if let Some(experimental) = extra.experimental {
+        document["experimental"] = experimental;
+    }
 }
 
 pub fn format_endpoint(host: &str, port: u16) -> String {
@@ -761,6 +982,160 @@ mod tests {
                 check.status.success(),
                 "sing-box check failed: {}",
                 String::from_utf8_lossy(&check.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn merges_extra_overlay_after_hop_rules_and_preserves_example_ai_vless_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let certs_dir = temp.path().join("certs");
+        let overlay_path = temp.path().join("extra.json");
+        let mut example: Value =
+            serde_json::from_str(include_str!("../extra-config.ai-vless.example.json")).unwrap();
+        example["dns"] = json!({ "servers": [{ "tag": "local", "type": "local" }] });
+        example["endpoints"] = json!([{ "type": "wireguard", "tag": "wg-local" }]);
+        fs::write(&overlay_path, serde_json::to_vec_pretty(&example).unwrap()).unwrap();
+
+        let tunnels = vec![
+            DesiredTunnel::Shadowsocks {
+                id: "t_hop".into(),
+                name: "ss-hop".into(),
+                listen: "::".into(),
+                port: 8388,
+                public_host: None,
+                credential_generation: 1,
+                method: "2022-blake3-aes-128-gcm".into(),
+                credentials: None,
+                hops: vec![DesiredHop {
+                    node_id: "node_b".into(),
+                    tunnel_id: "t_exit".into(),
+                    tag: "hop-t_hop-t_exit".into(),
+                    protocol: "shadowsocks".into(),
+                    status: "ready".into(),
+                    server: Some("203.0.113.10".into()),
+                    port: Some(8388),
+                    method: Some("2022-blake3-aes-128-gcm".into()),
+                    password: Some("password".into()),
+                    uuid: None,
+                    flow: None,
+                    congestion_control: None,
+                    tls: None,
+                    transport: None,
+                }],
+            },
+            DesiredTunnel::Shadowsocks {
+                id: "t_direct".into(),
+                name: "ss-direct".into(),
+                listen: "::".into(),
+                port: 8389,
+                public_host: None,
+                credential_generation: 1,
+                method: "2022-blake3-aes-128-gcm".into(),
+                credentials: None,
+                hops: vec![],
+            },
+        ];
+
+        let mut secrets = SecretStore::default();
+        secrets.reconcile_desired(&tunnels, &certs_dir).unwrap();
+        let rendered = render_desired_with_overlay(
+            &tunnels,
+            &secrets,
+            &certs_dir,
+            Some("203.0.113.8"),
+            "healthy",
+            Some(&overlay_path),
+        )
+        .unwrap();
+
+        let document: Value = serde_json::from_slice(&rendered.bytes).unwrap();
+        let outbounds = document["outbounds"].as_array().unwrap();
+        assert_eq!(outbounds.len(), 3);
+        assert_eq!(outbounds[0]["tag"], "direct");
+        assert_eq!(outbounds[1]["tag"], "hop-t_hop-t_exit");
+        assert_eq!(outbounds[2]["tag"], "lan-ai-vless");
+
+        assert_eq!(document["endpoints"][0]["tag"], "wg-local");
+        assert_eq!(document["dns"]["servers"][0]["tag"], "local");
+        assert_eq!(document["experimental"]["cache_file"]["enabled"], true);
+
+        let rules = document["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0]["outbound"], "hop-t_hop-t_exit");
+        assert_eq!(rules[1]["action"], "sniff");
+        assert_eq!(rules[2]["outbound"], "lan-ai-vless");
+        assert_eq!(
+            document["route"]["rule_set"][0]["tag"],
+            "geosite-category-ai-!cn"
+        );
+        assert_eq!(document["route"]["final"], "direct");
+    }
+
+    #[test]
+    fn emits_block_outbound_when_overlay_route_uses_block() {
+        let temp = tempfile::tempdir().unwrap();
+        let certs_dir = temp.path().join("certs");
+        let overlay_path = temp.path().join("extra.json");
+        fs::write(
+            &overlay_path,
+            br#"{"route":{"rules":[{"ip_is_private":true,"outbound":"block"}]}}"#,
+        )
+        .unwrap();
+
+        let tunnels = vec![DesiredTunnel::Shadowsocks {
+            id: "t_ss".into(),
+            name: "ss".into(),
+            listen: "::".into(),
+            port: 8388,
+            public_host: None,
+            credential_generation: 1,
+            method: "2022-blake3-aes-128-gcm".into(),
+            credentials: None,
+            hops: vec![],
+        }];
+        let mut secrets = SecretStore::default();
+        secrets.reconcile_desired(&tunnels, &certs_dir).unwrap();
+        let rendered = render_desired_with_overlay(
+            &tunnels,
+            &secrets,
+            &certs_dir,
+            None,
+            "healthy",
+            Some(&overlay_path),
+        )
+        .unwrap();
+        let document: Value = serde_json::from_slice(&rendered.bytes).unwrap();
+        assert!(
+            document["outbounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|o| o["tag"] == "block")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_extra_overlay_configs() {
+        let temp = tempfile::tempdir().unwrap();
+        for (idx, body) in [
+            r#"{"inbounds":[{"type":"direct","tag":"x"}]}"#,
+            r#"{"log":{"level":"debug"}}"#,
+            r#"{"outbound":{"type":"direct","tag":"x"}}"#,
+            r#"{"outbounds":[{"type":"vless","tag":"direct"}]}"#,
+            r#"{"outbounds":[{"type":"vless","tag":"block"}]}"#,
+            r#"{"outbounds":[{"type":"vless","tag":"hop-custom"}]}"#,
+            r#"{"outbounds":[{"type":"vless","tag":"dup"}],"endpoints":[{"type":"wireguard","tag":"dup"}]}"#,
+            r#"{"outbounds":[{"type":"vless","tag":"lan"}],"route":{"final":"missing"}}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = temp.path().join(format!("bad-{idx}.json"));
+            fs::write(&path, body).unwrap();
+            assert!(
+                validate_extra_config(&path).is_err(),
+                "expected overlay #{idx} to be rejected: {body}"
             );
         }
     }

@@ -235,6 +235,7 @@ mod tests {
         let settings = SingBoxSettings {
             binary_path: binary.to_string_lossy().into(),
             managed_config_path: managed.to_string_lossy().into(),
+            extra_config_path: None,
             secrets_path: directory
                 .path()
                 .join("secrets.json")

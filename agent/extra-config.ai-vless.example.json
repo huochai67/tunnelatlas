@@ -1,0 +1,39 @@
+{
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "lan-ai-vless",
+      "server": "192.168.1.10",
+      "server_port": 10086,
+      "uuid": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "action": "sniff"
+      },
+      {
+        "rule_set": [
+          "geosite-category-ai-!cn"
+        ],
+        "outbound": "lan-ai-vless"
+      }
+    ],
+    "rule_set": [
+      {
+        "tag": "geosite-category-ai-!cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ai-!cn.srs",
+        "download_detour": "lan-ai-vless"
+      }
+    ]
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "/var/lib/tunnelatlas/cache.db"
+    }
+  }
+}

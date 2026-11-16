@@ -18,6 +18,7 @@
    - Agent 仍可上报建立客户端连接所需的公共认证参数，供混合版本订阅回落。Reality 私钥、TLS 私钥及完整 sing-box 配置严禁上报。
    - 观测行继续用 `CREDENTIALS_KEY` 加密，AAD 为 `${nodeId}:${id}`，与托管凭据上下文错开。
    - `/v1/tunnels` 与 `/v1/subscription` 仅在通过 `READ_TOKEN`（或 `/v1/tunnels` 的 `ADMIN_TOKEN`）鉴权后返回解密后的客户端认证参数，应按敏感凭据保护；`/v1/admin/overview` 不再解密或返回 `authentication`，管理控制台也不展示密钥。
+   - 节点本地配置的 `singBox.extraConfigPath` 及其中的私有出站凭据（如局域网 VLESS UUID）、分流规则和详细校验错误仅保留在本机，绝不上报给 Worker 或写入 D1。
 3. **错误隔离与防泄露**：
    - 当 sing-box 校验失败、启动失败或本地文件操作失败时，详细错误（包括 stderr、文件路径或包含凭据的配置内容）仅打印在本地日志中。
    - 向 Worker 上报的 `configApplyError` 严格限定为枚举错误码（`invalid_desired_config`、`sing_box_validation_failed`、`sing_box_start_failed`、`local_apply_failed`），杜绝本地错误堆栈或敏感信息泄露至 D1。

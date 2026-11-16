@@ -55,6 +55,8 @@ pub struct SingBoxSettings {
     pub binary_path: String,
     #[serde(default = "default_managed_config")]
     pub managed_config_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_config_path: Option<String>,
     #[serde(default = "default_secrets")]
     pub secrets_path: String,
     #[serde(default = "default_certificates")]
@@ -71,6 +73,7 @@ impl Default for SingBoxSettings {
         Self {
             binary_path: default_binary(),
             managed_config_path: default_managed_config(),
+            extra_config_path: None,
             secrets_path: default_secrets(),
             certificates_directory: default_certificates(),
             working_directory: None,
@@ -129,6 +132,19 @@ impl Config {
         }
         if self.sing_box.shutdown_timeout_seconds == 0 {
             bail!("singBox.shutdownTimeoutSeconds must be greater than zero");
+        }
+        if let Some(extra) = &self.sing_box.extra_config_path {
+            let trimmed = extra.trim();
+            if trimmed.is_empty() {
+                bail!("singBox.extraConfigPath must not be empty");
+            }
+            let extra_path = Path::new(trimmed);
+            if extra_path == Path::new(&self.sing_box.managed_config_path)
+                || extra_path == Path::new(&self.sing_box.secrets_path)
+                || extra_path == Path::new(&self.runtime_path)
+            {
+                bail!("singBox.extraConfigPath must not point to a TunnelAtlas managed state file");
+            }
         }
         Ok(())
     }
@@ -238,5 +254,53 @@ singBox: {}
             observed.insert(ms);
         }
         assert!(observed.len() > 1, "expected randomized delays");
+    }
+
+    #[test]
+    fn validates_extra_config_path() {
+        let base_yaml = r#"
+serverUrl: https://example.com
+singBox: {}
+"#;
+        let base_cfg: Config = serde_yaml::from_str(base_yaml).unwrap();
+        assert!(base_cfg.validate().is_ok());
+        let serialized = serde_yaml::to_string(&base_cfg).unwrap();
+        assert!(!serialized.contains("extraConfigPath"));
+
+        let empty_yaml = r#"
+serverUrl: https://example.com
+singBox:
+  extraConfigPath: "   "
+"#;
+        let empty_cfg: Config = serde_yaml::from_str(empty_yaml).unwrap();
+        assert!(empty_cfg.validate().is_err());
+
+        for managed_target in [
+            "/var/lib/tunnelatlas/sing-box.json",
+            "/var/lib/tunnelatlas/secrets.json",
+            "/var/lib/tunnelatlas/runtime.json",
+        ] {
+            let collision_yaml = format!(
+                r#"
+serverUrl: https://example.com
+singBox:
+  extraConfigPath: "{managed_target}"
+"#
+            );
+            let collision_cfg: Config = serde_yaml::from_str(&collision_yaml).unwrap();
+            assert!(collision_cfg.validate().is_err());
+        }
+
+        let valid_yaml = r#"
+serverUrl: https://example.com
+singBox:
+  extraConfigPath: /etc/tunnelatlas/extra-sing-box.json
+"#;
+        let valid_cfg: Config = serde_yaml::from_str(valid_yaml).unwrap();
+        assert!(valid_cfg.validate().is_ok());
+        assert_eq!(
+            valid_cfg.sing_box.extra_config_path.as_deref(),
+            Some("/etc/tunnelatlas/extra-sing-box.json")
+        );
     }
 }

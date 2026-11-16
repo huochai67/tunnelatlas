@@ -7,6 +7,7 @@ runtimePath: /tmp/tunnelatlas-dev/runtime.json
 singBox:
   binaryPath: /usr/local/bin/sing-box
   managedConfigPath: /tmp/tunnelatlas-dev/sing-box.json
+  # extraConfigPath: /etc/tunnelatlas/extra-sing-box.json
   secretsPath: /tmp/tunnelatlas-dev/secrets.json
   certificatesDirectory: /tmp/tunnelatlas-dev/certificates
   workingDirectory: /tmp/tunnelatlas-dev
