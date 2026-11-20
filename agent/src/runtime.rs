@@ -10,6 +10,10 @@ use crate::{config::write_private_atomic, desired::DesiredConfig, protocol::Conf
 pub struct RuntimeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_ipv4: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_ipv6: Option<String>,
     #[serde(default)]
     pub process_healthy: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

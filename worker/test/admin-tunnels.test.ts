@@ -63,6 +63,19 @@ function testEnv(options?: {
             const match = tunnels.find((t) => t.name === name || t.port === port);
             return (match ?? null) as T | null;
           }
+          if (sql.includes("UPDATE tunnel_configs SET subscription_name")) {
+            const nodeId = call.values[4];
+            const id = call.values[5];
+            const match = tunnels.find((t) => t.node_id === nodeId && t.id === id);
+            if (!match) return null as T | null;
+            return {
+              ...match,
+              subscription_name: call.values[0],
+              public_ipv6: call.values[1],
+              subscription_ip_mode: call.values[2],
+              updated_at: call.values[3],
+            } as T;
+          }
           if (sql.includes("FROM tunnel_configs WHERE node_id = ? AND id = ?")) {
             const nodeId = call.values[0];
             const id = call.values[1];
@@ -286,6 +299,29 @@ describe("PUT /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}", () => {
     expect(res.status).toBe(200);
     const versionUpdate = calls.find((c) => c.sql.includes("UPDATE nodes SET config_version = config_version + 1"));
     expect(versionUpdate).toBeUndefined();
+  });
+
+  it("updates publicIpv6 and subscriptionIpMode without incrementing config_version", async () => {
+    const { env, calls } = testEnv({ existingTunnels: [existingTun] });
+    const res = await worker.fetch(adminReq("/v1/admin/nodes/node_1/tunnels/tun_1", "PUT", {
+      name: "old_name",
+      type: "shadowsocks",
+      port: 8388,
+      listen: "::",
+      method: "2022-blake3-aes-128-gcm",
+      publicIpv6: "[2001:db8::99]",
+      subscriptionIpMode: "ipv6",
+    }), env);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { tunnel: Record<string, unknown> };
+    expect(body.tunnel.publicIpv6).toBe("2001:db8::99");
+    expect(body.tunnel.subscriptionIpMode).toBe("ipv6");
+    const versionUpdate = calls.find((c) => c.sql.includes("UPDATE nodes SET config_version = config_version + 1"));
+    expect(versionUpdate).toBeUndefined();
+    const metaUpdate = calls.find((c) => c.sql.includes("SET subscription_name = ?, public_ipv6 = ?, subscription_ip_mode = ?"));
+    expect(metaUpdate).toBeDefined();
+    expect(metaUpdate?.values[1]).toBe("2001:db8::99");
+    expect(metaUpdate?.values[2]).toBe("ipv6");
   });
 });
 

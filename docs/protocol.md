@@ -22,15 +22,15 @@
 ### 隧道配置 CRUD 规则
 
 1. `POST /v1/admin/nodes/{nodeId}/tunnels`：
-   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`、可选 `subscriptionName`（订阅显示名，1-64 字符，不含控制字符）、对应协议选项，以及可选 `hops`（最多 3 项 `{ nodeId, tunnelId }`）。其中 Hysteria2 / TUIC / VLESS-Reality / AnyTLS-Reality 的 `serverName` 必须为严格 DNS 主机名（总长不超过 253 字符，拒绝 IP、URL、端口、下划线与空白字符）。
+   - 接收完整的期望隧道参数：`name` (`^[A-Za-z0-9_-]{1,64}$`)、`type`、`port` (`1..=65535`)、可选 `listen`（默认 `::`）、可选 `publicHost`（公网 IPv4、IPv6 或域名，自动剥离 IPv6 方括号）、可选 `publicIpv6`（可选公网 IPv6 覆盖地址，用于手动指定或子网轮换 IPv6 入口）、可选 `subscriptionIpMode`（`auto` / `ipv4` / `ipv6` / `dual`，默认 `auto`）、可选 `subscriptionName`（订阅显示名，1-64 字符，不含控制字符）、对应协议选项，以及可选 `hops`（最多 3 项 `{ nodeId, tunnelId }`）。其中 Hysteria2 / TUIC / VLESS-Reality / AnyTLS-Reality 的 `serverName` 必须为严格 DNS 主机名（总长不超过 253 字符，拒绝 IP、URL、端口、下划线与空白字符）。
    - hops 必须指向其他节点上已存在的隧道，禁止自引用、同节点和环；否则 400/404。
    - 插入时 Worker 生成协议身份并加密存储，原子递增 `nodes.config_version`，返回 `{ tunnel }`（状态 201，不含明文密钥）。
    - 每个节点最多 64 条期望隧道；`name` 或 `port` 冲突返回 409。
 
 2. `PUT /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
-   - 完整替换可编辑字段（含 `hops` 与 `subscriptionName`），保持 `id`、`node_id` 与 `subscription_enabled`。
+   - 完整替换可编辑字段（含 `hops`、`subscriptionName`、`publicIpv6` 与 `subscriptionIpMode`），保持 `id`、`node_id` 与 `subscription_enabled`。
    - 当协议类型、Shadowsocks `method` 或 Hysteria2/TUIC `serverName` 改变时递增 `credential_generation` 并重新生成托管凭据。
-   - 期望字段或 hops 实际改变时递增 `config_version`；仅改 `subscriptionName` 不影响 Agent，不递增版本。
+   - 期望字段或 hops 实际改变时递增 `config_version`；仅改 `subscriptionName`、`publicIpv6` 或 `subscriptionIpMode` 不影响 Agent，不递增版本并立即生效。
    - 被其他入口引用为 hop 的隧道变更还会递增那些入口节点的版本。
 
 3. `PATCH /v1/admin/nodes/{nodeId}/tunnels/{tunnelId}`：
@@ -85,6 +85,7 @@ METHOD\nPATH\nTIMESTAMP\nSEQUENCE\nBODY_SHA256
   - 显式 `null`：新 Agent 初始启动或未应用 Worker 期望配置，推进 sequence/心跳/元数据并记录 `configApplyError`，但不修改观测隧道、Cloudflare 前端或 `nodes.applied_config_version`。
   - 非负安全整数（`<= nodes.config_version`）：新 Agent 已应用的期望版本号。只接受存在于 `tunnel_configs` 中的隧道并用 `EXISTS tunnel_configs` 条件保障 upsert，同时清除未被接受的遗留/孤儿观测行。
 - `configApplyError`: 可选非机密错误码：`invalid_desired_config`、`sing_box_validation_failed`、`sing_box_start_failed`、`local_apply_failed`。
+- `observedIpv4` / `observedIpv6`: 可选双栈公网地址探测结果。Agent 通过分别绑定 `0.0.0.0` 与 `[::]` 请求 `GET /v1/ip` 获取真实公网 IPv4/IPv6 并上报，Worker 持久化到 `nodes.observed_ipv4` / `nodes.observed_ipv6`，同时保持主 `observedAddress` 在双栈节点上优先稳定使用 IPv4（纯 IPv6 节点回退 IPv6）。
 
 ### 响应体
 
@@ -130,11 +131,11 @@ Authorization: Bearer <READ_TOKEN>
 ## 节点订阅 API
 
 ```http
-GET /v1/subscription?nodeId=node_xxx
+GET /v1/subscription?nodeId=node_xxx&ip=v6
 Authorization: Bearer <READ_TOKEN>
 ```
 
-支持 `?token=<READ_TOKEN>` 查询参数。托管节点通过 `tunnel_configs.subscription_enabled` 控制下发；遗留节点通过 `tunnels.subscription_enabled` 控制。仅输出在线且状态为 `healthy` 的隧道。
+支持 `?token=<READ_TOKEN>` 查询参数，以及可选 `?ip=v4|v6|dual`（也接受 `ipv4|ipv6|all`）按地址族筛选/展开订阅入口；不传 `ip` 时按每条隧道的 `subscriptionIpMode`（`auto` / `ipv4` / `ipv6` / `dual`）生成，且支持通过环境变量 `CLOUDFLARE_PREFERRED_IPV6` 为 Cloudflare 前端配置 IPv6 优选地址。托管节点通过 `tunnel_configs.subscription_enabled` 控制下发；遗留节点通过 `tunnels.subscription_enabled` 控制。仅输出在线且状态为 `healthy` 的隧道。
 
 ## 发布与升级顺序
 

@@ -5,7 +5,17 @@ import {
 } from "./cloudflare";
 import { encryptCredentials, generateProtocolCredentials } from "./credentials";
 import { decryptJson, encryptJson, randomId, randomToken, sha256Hex, timingSafeEqualStrings } from "./crypto";
-import { externallyReachableEndpoint, observedAddress, validFrontendAddress } from "./endpoints";
+import {
+  externallyReachableEndpoint,
+  formatHostPort,
+  ipFamily,
+  listenSupportsIpv6,
+  normalizeFrontendAddress,
+  normalizePublicIpv6,
+  observedAddress,
+  observedIpv4,
+  observedIpv6,
+} from "./endpoints";
 import {
   assertHopGraph,
   bumpDependentVersions,
@@ -20,8 +30,17 @@ import {
   nodeHopUsage,
 } from "./hops";
 import { bearer, HttpError, json, problem, readJson } from "./http";
-import { encodeSubscription, type SubscriptionTunnel } from "./subscription";
-import type { CloudflareFrontendState, EnrollmentBody, Env, HopRef, ReportBody, TunnelBody, TunnelConfigRow } from "./types";
+import { encodeSubscription, type SubscriptionIpFilter, type SubscriptionTunnel } from "./subscription";
+import type {
+  CloudflareFrontendState,
+  EnrollmentBody,
+  Env,
+  HopRef,
+  ReportBody,
+  SubscriptionIpMode,
+  TunnelBody,
+  TunnelConfigRow,
+} from "./types";
 import {
   type NormalizedTunnelConfigInput,
   validateEnrollment,
@@ -81,11 +100,37 @@ function cloudflareStatus(error: unknown): never {
 function preferredFrontendAddress(env: Env): string | null {
   const value = env.CLOUDFLARE_PREFERRED_ADDRESS?.trim();
   if (!value) return null;
-  if (!validFrontendAddress(value)) {
+  const normalized = normalizeFrontendAddress(value);
+  if (!normalized) {
     console.error("ignoring invalid CLOUDFLARE_PREFERRED_ADDRESS", value);
     return null;
   }
-  return value;
+  return normalized;
+}
+
+function preferredFrontendIpv6(env: Env): string | null {
+  const value = env.CLOUDFLARE_PREFERRED_IPV6?.trim();
+  if (!value) return null;
+  const normalized = normalizePublicIpv6(value);
+  if (!normalized) {
+    console.error("ignoring invalid CLOUDFLARE_PREFERRED_IPV6", value);
+    return null;
+  }
+  return normalized;
+}
+
+function parseSubscriptionIpFilter(value: string | null): SubscriptionIpFilter | null {
+  if (value === null || value === "") return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "v4" || normalized === "ipv4") return "v4";
+  if (normalized === "v6" || normalized === "ipv6") return "v6";
+  if (normalized === "dual" || normalized === "all") return "dual";
+  throw new HttpError(400, "Invalid ip filter");
+}
+
+function clientIp(request: Request): Response {
+  const ip = observedAddress(request.headers.get("CF-Connecting-IP"));
+  return json({ ip, family: ipFamily(ip) });
 }
 
 async function claimFrontend(
@@ -280,7 +325,8 @@ async function resetEnrollment(request: Request, env: Env, encodedNodeId: string
     env.DB.prepare(
       `UPDATE nodes SET public_key = NULL, platform_json = NULL, labels_json = '{}', agent_version = NULL,
        last_sequence = 0, last_seen_at = NULL, enrolled_at = NULL, enrollment_generation = ?,
-       applied_config_version = NULL, config_apply_error = NULL
+       applied_config_version = NULL, config_apply_error = NULL,
+       observed_ipv4 = NULL, observed_ipv6 = NULL
        WHERE id = ? AND public_key = ?`,
     ).bind(enrollment.hash, nodeId, node.public_key),
     env.DB.prepare(
@@ -315,6 +361,8 @@ function formatTunnelConfig(row: TunnelConfigRow, hops: HopRef[] = []): Record<s
     listen: row.listen,
     port: row.port,
     publicHost: row.public_host,
+    publicIpv6: row.public_ipv6 ?? null,
+    subscriptionIpMode: (row.subscription_ip_mode ?? "auto") as SubscriptionIpMode,
     credentialGeneration: row.credential_generation,
     subscriptionEnabled: Boolean(row.subscription_enabled),
     subscriptionName: row.subscription_name,
@@ -399,9 +447,13 @@ async function createTunnelConfig(
   try {
     const results = await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO tunnel_configs (node_id, id, name, type, listen, port, public_host, options_json, credential_generation, subscription_enabled, credentials_ciphertext, subscription_name, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?)`
-      ).bind(nodeId, tunnelId, validated.name, validated.type, validated.listen, validated.port, validated.publicHost, optionsJson, credentialsCiphertext, validated.subscriptionName, now, now),
+        `INSERT INTO tunnel_configs (node_id, id, name, type, listen, port, public_host, public_ipv6, subscription_ip_mode, options_json, credential_generation, subscription_enabled, credentials_ciphertext, subscription_name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?)`
+      ).bind(
+        nodeId, tunnelId, validated.name, validated.type, validated.listen, validated.port,
+        validated.publicHost, validated.publicIpv6, validated.subscriptionIpMode,
+        optionsJson, credentialsCiphertext, validated.subscriptionName, now, now,
+      ),
       ...hopReplaceStatements(env, nodeId, tunnelId, validated.hops),
       env.DB.prepare("UPDATE nodes SET config_version = config_version + 1 WHERE id = ?").bind(nodeId),
     ]);
@@ -430,6 +482,8 @@ async function createTunnelConfig(
       listen: validated.listen,
       port: validated.port,
       publicHost: validated.publicHost,
+      publicIpv6: validated.publicIpv6,
+      subscriptionIpMode: validated.subscriptionIpMode,
       credentialGeneration: 1,
       subscriptionEnabled: true,
       subscriptionName: validated.subscriptionName,
@@ -470,7 +524,10 @@ async function updateTunnelConfig(
   const hopsChanged = !hopRefsEqual(existingHops, validated.hops);
   const changed = hasDesiredFieldChanged(existing, validated);
   const subscriptionNameChanged = (existing.subscription_name ?? null) !== validated.subscriptionName;
-  if (!changed && !hopsChanged && !subscriptionNameChanged) {
+  const publicIpv6Changed = (existing.public_ipv6 ?? null) !== validated.publicIpv6;
+  const subscriptionIpModeChanged = (existing.subscription_ip_mode ?? "auto") !== validated.subscriptionIpMode;
+  const subscriptionMetaChanged = subscriptionNameChanged || publicIpv6Changed || subscriptionIpModeChanged;
+  if (!changed && !hopsChanged && !subscriptionMetaChanged) {
     return json({ tunnel: formatTunnelConfig(existing, existingHops) });
   }
 
@@ -479,9 +536,12 @@ async function updateTunnelConfig(
   const now = new Date().toISOString();
   if (!changed && !hopsChanged) {
     const updated = await env.DB.prepare(
-      `UPDATE tunnel_configs SET subscription_name = ?, updated_at = ?
+      `UPDATE tunnel_configs SET subscription_name = ?, public_ipv6 = ?, subscription_ip_mode = ?, updated_at = ?
        WHERE node_id = ? AND id = ? AND updated_at = ? RETURNING *`,
-    ).bind(validated.subscriptionName, now, nodeId, tunnelId, existing.updated_at).first<TunnelConfigRow>();
+    ).bind(
+      validated.subscriptionName, validated.publicIpv6, validated.subscriptionIpMode,
+      now, nodeId, tunnelId, existing.updated_at,
+    ).first<TunnelConfigRow>();
     if (!updated) throw new HttpError(409, "Tunnel configuration was modified concurrently");
     return json({ tunnel: formatTunnelConfig(updated, existingHops) });
   }
@@ -504,10 +564,11 @@ async function updateTunnelConfig(
     const statements = [
       env.DB.prepare(
         `UPDATE tunnel_configs
-         SET name = ?, type = ?, listen = ?, port = ?, public_host = ?, options_json = ?, credential_generation = ?, credentials_ciphertext = ?, subscription_name = ?, updated_at = ?
+         SET name = ?, type = ?, listen = ?, port = ?, public_host = ?, public_ipv6 = ?, subscription_ip_mode = ?, options_json = ?, credential_generation = ?, credentials_ciphertext = ?, subscription_name = ?, updated_at = ?
          WHERE node_id = ? AND id = ? AND updated_at = ?`
       ).bind(
         validated.name, validated.type, validated.listen, validated.port, validated.publicHost,
+        validated.publicIpv6, validated.subscriptionIpMode,
         optionsJson, nextCredGen, credentialsCiphertext, validated.subscriptionName, now, nodeId, tunnelId, existing.updated_at
       ),
     ];
@@ -540,6 +601,8 @@ async function updateTunnelConfig(
       listen: validated.listen,
       port: validated.port,
       publicHost: validated.publicHost,
+      publicIpv6: validated.publicIpv6,
+      subscriptionIpMode: validated.subscriptionIpMode,
       credentialGeneration: nextCredGen,
       subscriptionEnabled: Boolean(existing.subscription_enabled),
       subscriptionName: validated.subscriptionName,
@@ -844,9 +907,27 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
   const now = new Date().toISOString();
 
   const node = await env.DB.prepare(
-    "SELECT id, config_version, applied_config_version FROM nodes WHERE id = ?"
-  ).bind(agent.id).first<{ id: string; config_version: number; applied_config_version: number | null }>();
+    "SELECT id, config_version, applied_config_version, observed_ipv4, observed_ipv6 FROM nodes WHERE id = ?"
+  ).bind(agent.id).first<{
+    id: string;
+    config_version: number;
+    applied_config_version: number | null;
+    observed_ipv4?: string | null;
+    observed_ipv6?: string | null;
+  }>();
   if (!node) throw new HttpError(404, "Node not found");
+
+  const connectingIpHeader = request.headers.get("CF-Connecting-IP");
+  const connectingIp = observedAddress(connectingIpHeader);
+  const connectingIpv4 = observedIpv4(connectingIp);
+  const connectingIpv6 = observedIpv6(connectingIp);
+  const nextObservedIpv4 = body.observedIpv4 !== undefined
+    ? (observedIpv4(body.observedIpv4) ?? connectingIpv4)
+    : (connectingIpv4 ?? observedIpv4(node.observed_ipv4 ?? null));
+  const nextObservedIpv6 = body.observedIpv6 !== undefined
+    ? (observedIpv6(body.observedIpv6) ?? connectingIpv6)
+    : (connectingIpv6 ?? observedIpv6(node.observed_ipv6 ?? null));
+  const primaryObservedAddress = nextObservedIpv4 ?? nextObservedIpv6 ?? connectingIp;
 
   const reprovision: Array<{ row: CloudflareFrontendRow; operationId: string }> = [];
   const deprovision: Array<{ row: CloudflareFrontendRow; operationId: string }> = [];
@@ -855,16 +936,21 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
   if (body.appliedConfigVersion === undefined) {
     statements.push(
       env.DB.prepare(
-        `UPDATE nodes SET last_sequence = ?, last_seen_at = ?, agent_version = ?, labels_json = ?
+        `UPDATE nodes SET last_sequence = ?, last_seen_at = ?, agent_version = ?, labels_json = ?,
+         observed_ipv4 = ?, observed_ipv6 = ?
          WHERE id = ? AND public_key = ? AND last_sequence < ?`
-      ).bind(agent.sequence, now, body.agentVersion, JSON.stringify(body.labels ?? {}), agent.id, agent.public_key, agent.sequence),
+      ).bind(
+        agent.sequence, now, body.agentVersion, JSON.stringify(body.labels ?? {}),
+        nextObservedIpv4, nextObservedIpv6,
+        agent.id, agent.public_key, agent.sequence,
+      ),
     );
 
     const tunnels = body.tunnels.filter((tunnel) => tunnel.kind === "sing-box/inbound");
     const encryptedTunnels = await Promise.all(tunnels.map(async (tunnel) => ({
       tunnel: {
         ...tunnel,
-        endpoint: externallyReachableEndpoint(tunnel.endpoint, request.headers.get("CF-Connecting-IP")),
+        endpoint: externallyReachableEndpoint(tunnel.endpoint, connectingIpHeader, nextObservedIpv4, nextObservedIpv6),
       },
       authenticationCiphertext: await encryptJson(tunnel.authentication ?? {}, env.CREDENTIALS_KEY, `${agent.id}:${tunnel.id}`),
     })));
@@ -921,7 +1007,8 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
   } else if (body.appliedConfigVersion === null) {
     statements.push(
       env.DB.prepare(
-        `UPDATE nodes SET last_sequence = ?, last_seen_at = ?, agent_version = ?, labels_json = ?, config_apply_error = ?
+        `UPDATE nodes SET last_sequence = ?, last_seen_at = ?, agent_version = ?, labels_json = ?,
+         config_apply_error = ?, observed_ipv4 = ?, observed_ipv6 = ?
          WHERE id = ? AND public_key = ? AND last_sequence < ?`,
       ).bind(
         agent.sequence,
@@ -929,6 +1016,8 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
         body.agentVersion,
         JSON.stringify(body.labels ?? {}),
         body.configApplyError ?? null,
+        nextObservedIpv4,
+        nextObservedIpv6,
         agent.id,
         agent.public_key,
         agent.sequence,
@@ -942,7 +1031,7 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
     statements.push(
       env.DB.prepare(
         `UPDATE nodes SET last_sequence = ?, last_seen_at = ?, agent_version = ?, labels_json = ?,
-         applied_config_version = ?, config_apply_error = ?
+         applied_config_version = ?, config_apply_error = ?, observed_ipv4 = ?, observed_ipv6 = ?
          WHERE id = ? AND public_key = ? AND last_sequence < ?`,
       ).bind(
         agent.sequence,
@@ -951,6 +1040,8 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
         JSON.stringify(body.labels ?? {}),
         body.appliedConfigVersion,
         body.configApplyError ?? null,
+        nextObservedIpv4,
+        nextObservedIpv6,
         agent.id,
         agent.public_key,
         agent.sequence,
@@ -969,7 +1060,7 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
     const encryptedTunnels = await Promise.all(acceptedTunnels.map(async (tunnel) => ({
       tunnel: {
         ...tunnel,
-        endpoint: externallyReachableEndpoint(tunnel.endpoint, request.headers.get("CF-Connecting-IP")),
+        endpoint: externallyReachableEndpoint(tunnel.endpoint, connectingIpHeader, nextObservedIpv4, nextObservedIpv6),
       },
       authenticationCiphertext: await encryptJson(tunnel.authentication ?? {}, env.CREDENTIALS_KEY, `${agent.id}:${tunnel.id}`),
     })));
@@ -1105,10 +1196,9 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
   if (Number(results[0]?.meta.changes ?? 0) !== 1) throw new HttpError(409, "A newer report was accepted first");
 
   if (hopTargetIds.size > 0) {
-    const connectingIp = request.headers.get("CF-Connecting-IP");
     for (const tunnel of body.tunnels) {
       if (tunnel.kind !== "sing-box/inbound" || !hopTargetIds.has(tunnel.id)) continue;
-      const endpoint = externallyReachableEndpoint(tunnel.endpoint, connectingIp);
+      const endpoint = externallyReachableEndpoint(tunnel.endpoint, connectingIpHeader, nextObservedIpv4, nextObservedIpv6);
       if (previousById.get(tunnel.id) !== endpoint) {
         await bumpDependentVersions(env, agent.id, tunnel.id);
       }
@@ -1132,7 +1222,9 @@ async function report(request: Request, env: Env, ctx?: ExecutionContext): Promi
   return json({
     acceptedSequence: agent.sequence,
     serverTime: now,
-    observedAddress: observedAddress(request.headers.get("CF-Connecting-IP")),
+    observedAddress: primaryObservedAddress,
+    observedIpv4: nextObservedIpv4,
+    observedIpv6: nextObservedIpv6,
     desiredConfig: {
       version: currentVersion,
       tunnels: desiredTunnels,
@@ -1182,8 +1274,9 @@ function publicTunnelQuery(filter: boolean, onlineOnly: boolean, subscriptionOnl
     t.kind, t.endpoint, t.protocol, t.status,
     t.metadata_json, t.authentication_ciphertext, t.last_seen_at,
     tc.credentials_ciphertext, tc.type, tc.options_json, tc.subscription_name,
+    tc.listen, tc.port, tc.public_host, tc.public_ipv6, tc.subscription_ip_mode,
     CASE WHEN n.applied_config_version IS NOT NULL THEN tc.subscription_enabled ELSE t.subscription_enabled END AS subscription_enabled,
-    n.name AS node_name,
+    n.name AS node_name, n.observed_ipv4 AS node_observed_ipv4, n.observed_ipv6 AS node_observed_ipv6,
     cf.hostname AS cf_hostname, cf.status AS cf_status, cf.source_endpoint AS cf_source_endpoint,
     cf.source_path AS cf_source_path, cf.last_error AS cf_last_error, cf.updated_at AS cf_updated_at
     FROM tunnels t
@@ -1234,6 +1327,7 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
     throw new HttpError(401, "Invalid subscription token");
   }
   const nodeId = url.searchParams.get("nodeId");
+  const ipFilter = parseSubscriptionIpFilter(url.searchParams.get("ip"));
   const offlineSeconds = Math.max(30, Number(env.AGENT_OFFLINE_SECONDS ?? 180));
   const cutoff = new Date(Date.now() - offlineSeconds * 1000).toISOString();
   const statement = nodeId
@@ -1241,9 +1335,15 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
     : env.DB.prepare(publicTunnelQuery(false, true, true)).bind(cutoff);
   const result = await statement.all<Record<string, unknown>>();
   const preferredAddress = preferredFrontendAddress(env);
+  const preferredIpv6 = preferredFrontendIpv6(env);
   const tunnels = await Promise.all(result.results.map(async (row): Promise<SubscriptionTunnel> => {
     const tunnel = await tunnelFromRow(row, env);
     const frontend = tunnel.cloudflare as CloudflareFrontendState | null;
+    const rawIpMode = typeof row.subscription_ip_mode === "string" ? row.subscription_ip_mode : null;
+    const subscriptionIpMode: SubscriptionIpMode | null =
+      rawIpMode === "auto" || rawIpMode === "ipv4" || rawIpMode === "ipv6" || rawIpMode === "dual"
+        ? rawIpMode
+        : null;
     return {
       nodeName: String(tunnel.nodeName),
       authentication: tunnel.authentication,
@@ -1253,12 +1353,24 @@ async function nodeSubscription(request: Request, env: Env): Promise<Response> {
       protocol: String(tunnel.protocol),
       status: tunnel.status,
       subscriptionName: typeof tunnel.subscriptionName === "string" ? tunnel.subscriptionName : null,
+      listen: typeof row.listen === "string" ? row.listen : null,
+      port: typeof row.port === "number" ? row.port : null,
+      publicHost: typeof row.public_host === "string" ? row.public_host : null,
+      publicIpv6: typeof row.public_ipv6 === "string" ? row.public_ipv6 : null,
+      subscriptionIpMode,
+      observedIpv4: typeof row.node_observed_ipv4 === "string" ? row.node_observed_ipv4 : null,
+      observedIpv6: typeof row.node_observed_ipv6 === "string" ? row.node_observed_ipv6 : null,
       cloudflare: frontend
-        ? { hostname: frontend.hostname, status: frontend.status, address: preferredAddress }
+        ? {
+          hostname: frontend.hostname,
+          status: frontend.status,
+          address: preferredAddress,
+          ipv6Address: preferredIpv6,
+        }
         : null,
     };
   }));
-  return new Response(encodeSubscription(tunnels), {
+  return new Response(encodeSubscription(tunnels, { ipFilter }), {
     headers: { "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8" },
   });
 }
@@ -1271,13 +1383,16 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
   const [nodesResult, desiredResult, legacyResult] = await Promise.all([
     env.DB.prepare(
       `SELECT n.id, n.name, n.labels_json, n.agent_version, n.last_seen_at, n.enrolled_at, n.created_at,
-       n.public_key, n.config_version, n.applied_config_version, n.config_apply_error
+       n.public_key, n.config_version, n.applied_config_version, n.config_apply_error,
+       n.observed_ipv4, n.observed_ipv6
        FROM nodes n ORDER BY n.name, n.created_at LIMIT 1000`
     ).all<Record<string, unknown>>(),
     env.DB.prepare(
       `SELECT tc.id, tc.node_id, tc.name, tc.type, tc.listen, tc.port, tc.public_host,
+       tc.public_ipv6, tc.subscription_ip_mode,
        tc.options_json, tc.credential_generation, tc.subscription_enabled, tc.subscription_name,
        n.name AS node_name, n.config_version, n.applied_config_version,
+       n.observed_ipv4 AS node_observed_ipv4, n.observed_ipv6 AS node_observed_ipv6,
        t.status AS observed_status, t.endpoint AS observed_endpoint,
        t.metadata_json AS observed_metadata_json,
        t.last_seen_at AS observed_last_seen_at,
@@ -1334,6 +1449,15 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
       updatedAt: row.cf_updated_at ? String(row.cf_updated_at) : null,
     } : null;
 
+    const listen = String(row.listen);
+    const port = Number(row.port);
+    const publicHost = row.public_host ? String(row.public_host) : null;
+    const publicIpv6 = row.public_ipv6 ? String(row.public_ipv6) : null;
+    const nodeObservedIpv6 = row.node_observed_ipv6 ? String(row.node_observed_ipv6) : null;
+    const ipv6Host = publicIpv6
+      ?? (publicHost && ipFamily(publicHost) === "ipv6" ? publicHost : null)
+      ?? (listenSupportsIpv6(listen) ? nodeObservedIpv6 : null);
+
     return {
       id: String(row.id),
       nodeId: String(row.node_id),
@@ -1341,9 +1465,12 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
       managed: true,
       name: String(row.name),
       type: String(row.type),
-      listen: String(row.listen),
-      port: Number(row.port),
-      publicHost: row.public_host ? String(row.public_host) : null,
+      listen,
+      port,
+      publicHost,
+      publicIpv6,
+      subscriptionIpMode: (row.subscription_ip_mode ? String(row.subscription_ip_mode) : "auto") as SubscriptionIpMode,
+      ipv6Endpoint: ipv6Host ? formatHostPort(ipv6Host, port) : null,
       credentialGeneration: Number(row.credential_generation),
       subscriptionEnabled: Boolean(row.subscription_enabled),
       subscriptionName: row.subscription_name ? String(row.subscription_name) : null,
@@ -1413,6 +1540,8 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
       configVersion,
       appliedConfigVersion,
       configApplyError,
+      observedIpv4: row.observed_ipv4 ? String(row.observed_ipv4) : null,
+      observedIpv6: row.observed_ipv6 ? String(row.observed_ipv6) : null,
       connectionStatus,
       tunnelCount: tunnelCounts.get(String(row.id)) ?? 0,
     };
@@ -1424,6 +1553,7 @@ async function adminOverview(request: Request, env: Env): Promise<Response> {
 async function route(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/healthz") return json({ status: "ok" });
+  if (request.method === "GET" && url.pathname === "/v1/ip") return clientIp(request);
   if (request.method === "POST" && url.pathname === "/v1/admin/nodes") return createNode(request, env);
   if (request.method === "GET" && url.pathname === "/v1/admin/overview") return adminOverview(request, env);
   const enrollmentMatch = url.pathname.match(/^\/v1\/admin\/nodes\/([^/]+)\/enrollment-tokens$/);

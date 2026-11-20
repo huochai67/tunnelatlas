@@ -174,7 +174,24 @@
 
       <label class="field-label" for="tunnel-public-host">公网地址 / 域名（可选）</label>
       <input id="tunnel-public-host" placeholder="留空则由 Agent 自动识别">
-      <small class="field-help">公网 IP 或域名，不带端口。留空则由 Agent 自动上报识别。</small>
+      <small class="field-help">公网 IPv4、IPv6 或域名，不带端口。留空则由 Agent 自动上报识别。</small>
+
+      <div class="form-row">
+        <div class="form-col">
+          <label class="field-label" for="tunnel-ip-mode">订阅入口 IP 模式</label>
+          <select id="tunnel-ip-mode">
+            <option value="auto">自动（跟随主端点）</option>
+            <option value="dual">双栈（IPv4 + IPv6）</option>
+            <option value="ipv6">仅 IPv6</option>
+            <option value="ipv4">仅 IPv4</option>
+          </select>
+        </div>
+        <div class="form-col">
+          <label class="field-label" for="tunnel-public-ipv6">公网 IPv6 覆盖（可选）</label>
+          <input id="tunnel-public-ipv6" placeholder="留空自动使用节点 IPv6">
+        </div>
+      </div>
+      <small class="field-help">仅改订阅 IP 模式或公网 IPv6 会立即生效，无需重启 sing-box；订阅链接也支持 ?ip=v6 / ?ip=v4 / ?ip=dual。</small>
 
       <label class="field-label" for="tunnel-subscription-name">订阅节点名（可选）</label>
       <input id="tunnel-subscription-name" maxlength="64" placeholder="香港 IEPL">

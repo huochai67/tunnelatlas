@@ -9,7 +9,10 @@ export interface Env {
   CLOUDFLARE_API_TOKEN?: string;
   CLOUDFLARE_ZONE_NAME?: string;
   CLOUDFLARE_PREFERRED_ADDRESS?: string;
+  CLOUDFLARE_PREFERRED_IPV6?: string;
 }
+
+export type SubscriptionIpMode = "auto" | "ipv4" | "ipv6" | "dual";
 
 export interface CloudflareFrontendState {
   hostname: string;
@@ -37,6 +40,8 @@ export interface ReportBody {
   tunnels: TunnelBody[];
   appliedConfigVersion?: number | null;
   configApplyError?: ConfigApplyErrorCode | null;
+  observedIpv4?: string | null;
+  observedIpv6?: string | null;
 }
 
 export interface TunnelBody {
@@ -222,6 +227,8 @@ export interface ReportResponse {
   acceptedSequence: number;
   serverTime: string;
   observedAddress: string | null;
+  observedIpv4?: string | null;
+  observedIpv6?: string | null;
   desiredConfig: DesiredConfig;
 }
 
@@ -231,6 +238,8 @@ export interface CreateTunnelConfigInput {
   listen?: string;
   port: number;
   publicHost?: string | null;
+  publicIpv6?: string | null;
+  subscriptionIpMode?: SubscriptionIpMode;
   method?: string;
   serverName?: string;
   congestionControl?: string;
@@ -246,6 +255,8 @@ export interface UpdateTunnelConfigInput {
   listen?: string;
   port: number;
   publicHost?: string | null;
+  publicIpv6?: string | null;
+  subscriptionIpMode?: SubscriptionIpMode;
   method?: string;
   serverName?: string;
   congestionControl?: string;
@@ -267,6 +278,8 @@ export interface TunnelConfigRow {
   listen: string;
   port: number;
   public_host: string | null;
+  public_ipv6?: string | null;
+  subscription_ip_mode?: SubscriptionIpMode | null;
   options_json: string;
   credential_generation: number;
   subscription_enabled: number;

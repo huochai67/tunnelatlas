@@ -406,4 +406,87 @@ describe("node subscription", () => {
     expect(tunnelsBody.tunnels.find((t) => t.id === "inbound-visible")?.subscriptionEnabled).toBe(true);
     expect(tunnelsBody.tunnels.find((t) => t.id === "inbound-hidden")?.subscriptionEnabled).toBe(false);
   });
+
+  it("supports ipv6, dual, and ipv4 subscription modes plus ?ip= query filtering", async () => {
+    const dualTunnel = tunnel({
+      name: "vless-in",
+      subscriptionName: "香港入口",
+      protocol: "vless",
+      endpoint: "203.0.113.8:443",
+      listen: "::",
+      port: 443,
+      observedIpv4: "203.0.113.8",
+      observedIpv6: "2001:db8::8",
+      authentication: { users: [{ name: "alice", uuid: "client-uuid", flow: "xtls-rprx-vision" }] },
+      metadata: {
+        tls: {
+          enabled: true,
+          serverName: "addons.mozilla.org",
+          reality: { enabled: true, publicKey: "pbk", shortId: "0123456789abcdef" },
+        },
+      },
+    });
+
+    // Mode: ipv6
+    const v6Only = subscriptionUris([{ ...dualTunnel, subscriptionIpMode: "ipv6" }]);
+    expect(v6Only).toHaveLength(1);
+    expect(v6Only[0]).toContain("@[2001:db8::8]:443?");
+    expect(v6Only[0]).toContain(`#${encodeURIComponent("香港入口/alice")}`);
+
+    // Mode: dual
+    const dual = subscriptionUris([{ ...dualTunnel, subscriptionIpMode: "dual" }]);
+    expect(dual).toHaveLength(2);
+    expect(dual[0]).toContain("@203.0.113.8:443?");
+    expect(dual[0]).toContain(`#${encodeURIComponent("香港入口/alice [IPv4]")}`);
+    expect(dual[1]).toContain("@[2001:db8::8]:443?");
+    expect(dual[1]).toContain(`#${encodeURIComponent("香港入口/alice [IPv6]")}`);
+
+    // Explicit publicIpv6 override (e.g., /64 rotation)
+    const rotated = subscriptionUris([{ ...dualTunnel, subscriptionIpMode: "ipv6", publicIpv6: "2001:db8::99" }]);
+    expect(rotated).toHaveLength(1);
+    expect(rotated[0]).toContain("@[2001:db8::99]:443?");
+
+    // IPv4-only listener (0.0.0.0) does not synthesize IPv6 from node observedIpv6
+    const v4Listener = subscriptionUris([{ ...dualTunnel, listen: "0.0.0.0", subscriptionIpMode: "ipv6" }]);
+    expect(v4Listener).toEqual([]);
+
+    // Query filter ip=v6 on an auto-mode dual-stack tunnel
+    const filteredV6 = subscriptionUris([dualTunnel], { ipFilter: "v6" });
+    expect(filteredV6).toHaveLength(1);
+    expect(filteredV6[0]).toContain("@[2001:db8::8]:443?");
+
+    // Query filter ip=v6 respects explicit ipv4 lock
+    expect(subscriptionUris([{ ...dualTunnel, subscriptionIpMode: "ipv4" }], { ipFilter: "v6" })).toEqual([]);
+
+    // Cloudflare VMess-WS with CLOUDFLARE_PREFERRED_IPV6
+    const cfDual = subscriptionUris([vmessTunnel({
+      subscriptionIpMode: "dual",
+      cloudflare: {
+        hostname: "ta-0123456789abcdef0123.example.com",
+        status: "active",
+        address: "104.16.132.229",
+        ipv6Address: "2606:4700::1",
+      },
+    })]);
+    expect(cfDual).toHaveLength(2);
+    expect(decodeVmess(cfDual[0])).toMatchObject({ add: "104.16.132.229", ps: "edge-01/public/1 [IPv4]" });
+    expect(decodeVmess(cfDual[1])).toMatchObject({ add: "2606:4700::1", ps: "edge-01/public/1 [IPv6]" });
+
+    // HTTP endpoint ?ip=v6 and invalid ?ip=
+    const env = await subscriptionEnv(
+      { hostname: "ta-0123456789abcdef0123.example.com", status: "active" },
+      { CLOUDFLARE_PREFERRED_ADDRESS: "104.16.132.229", CLOUDFLARE_PREFERRED_IPV6: "[2606:4700::2]" },
+    );
+    const v6Res = await worker.fetch(new Request("https://atlas.example/v1/subscription?ip=v6", {
+      headers: { Authorization: "Bearer read-token" },
+    }), env);
+    expect(v6Res.status).toBe(200);
+    const v6Text = new TextDecoder().decode(Uint8Array.from(atob(await v6Res.text()), (c) => c.charCodeAt(0)));
+    expect(decodeVmess(v6Text.trim()).add).toBe("2606:4700::2");
+
+    const badRes = await worker.fetch(new Request("https://atlas.example/v1/subscription?ip=bogus", {
+      headers: { Authorization: "Bearer read-token" },
+    }), env);
+    expect(badRes.status).toBe(400);
+  });
 });

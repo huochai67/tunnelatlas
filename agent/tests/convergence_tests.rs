@@ -73,9 +73,13 @@ fn report_request_serializes_uninitialized_as_explicit_null() {
         tunnels: vec![],
         applied_config_version: None,
         config_apply_error: None,
+        observed_ipv4: None,
+        observed_ipv6: None,
     };
     let json = serde_json::to_string(&req).unwrap();
     assert!(json.contains("\"appliedConfigVersion\":null"));
+    assert!(json.contains("\"observedIpv4\":null"));
+    assert!(json.contains("\"observedIpv6\":null"));
     assert!(!json.contains("configApplyError"));
 
     let req_with_error = ReportRequest {
@@ -84,10 +88,14 @@ fn report_request_serializes_uninitialized_as_explicit_null() {
         tunnels: vec![],
         applied_config_version: Some(2),
         config_apply_error: Some(ConfigApplyErrorCode::SingBoxStartFailed),
+        observed_ipv4: Some("203.0.113.8"),
+        observed_ipv6: Some("2001:db8::8"),
     };
     let json_err = serde_json::to_string(&req_with_error).unwrap();
     assert!(json_err.contains("\"appliedConfigVersion\":2"));
     assert!(json_err.contains("\"configApplyError\":\"sing_box_start_failed\""));
+    assert!(json_err.contains("\"observedIpv4\":\"203.0.113.8\""));
+    assert!(json_err.contains("\"observedIpv6\":\"2001:db8::8\""));
 }
 
 #[tokio::test]

@@ -115,6 +115,7 @@ impl Config {
         if url.scheme() != "https"
             && url.host_str() != Some("127.0.0.1")
             && url.host_str() != Some("localhost")
+            && url.host_str() != Some("[::1]")
         {
             bail!("serverUrl must use HTTPS outside localhost");
         }
@@ -233,6 +234,13 @@ singBox: {}
 "#;
         let config: Config = serde_yaml::from_str(short_interval).unwrap();
         assert!(config.validate().is_err());
+
+        let ipv6_loopback = r#"
+serverUrl: http://[::1]:8787
+singBox: {}
+"#;
+        let config: Config = serde_yaml::from_str(ipv6_loopback).unwrap();
+        assert!(config.validate().is_ok());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, net::IpAddr, path::Path, str::FromStr};
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
@@ -87,10 +87,7 @@ pub fn render_desired_with_overlay(
             }
         }
 
-        let host = tunnel
-            .public_host()
-            .or(observed_address)
-            .unwrap_or_else(|| tunnel.listen());
+        let host = select_reported_host(tunnel.public_host(), tunnel.listen(), observed_address);
         let endpoint = format_endpoint(host, tunnel.port());
         observed_tunnels.push(ObservedTunnel {
             id: tunnel.id().to_owned(),
@@ -323,9 +320,47 @@ fn apply_overlay(document: &mut Value, mut route_rules: Vec<Value>, extra: Local
     }
 }
 
+fn strip_brackets(host: &str) -> &str {
+    let trimmed = host.trim();
+    trimmed
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(trimmed)
+}
+
+fn select_reported_host<'a>(
+    public_host: Option<&'a str>,
+    listen: &'a str,
+    observed_address: Option<&'a str>,
+) -> &'a str {
+    if let Some(host) = public_host {
+        let bare = strip_brackets(host);
+        if !bare.is_empty() {
+            return bare;
+        }
+    }
+    let listen_bare = strip_brackets(listen);
+    let observed_bare = observed_address
+        .map(strip_brackets)
+        .filter(|value| !value.is_empty());
+    if listen_bare == "::" {
+        return observed_bare.unwrap_or(listen_bare);
+    }
+    if let Ok(listen_ip) = IpAddr::from_str(listen_bare) {
+        if let Some(observed) = observed_bare
+            && let Ok(observed_ip) = IpAddr::from_str(observed)
+            && observed_ip.is_ipv6() == listen_ip.is_ipv6()
+        {
+            return observed;
+        }
+        return listen_bare;
+    }
+    observed_bare.unwrap_or(listen_bare)
+}
+
 pub fn format_endpoint(host: &str, port: u16) -> String {
-    let host = host.trim();
-    if host.contains(':') && !host.starts_with('[') {
+    let host = strip_brackets(host);
+    if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
         format!("{host}:{port}")
@@ -695,7 +730,28 @@ mod tests {
         assert_eq!(format_endpoint("::", 8388), "[::]:8388");
         assert_eq!(format_endpoint("[::]", 8388), "[::]:8388");
         assert_eq!(format_endpoint("2001:db8::1", 8388), "[2001:db8::1]:8388");
+        assert_eq!(format_endpoint("[2001:db8::1]", 8388), "[2001:db8::1]:8388");
         assert_eq!(format_endpoint("example.com", 443), "example.com:443");
+    }
+
+    #[test]
+    fn reported_host_respects_listen_address_family() {
+        assert_eq!(
+            select_reported_host(Some("[2001:db8::1]"), "::", Some("203.0.113.8")),
+            "2001:db8::1"
+        );
+        assert_eq!(
+            select_reported_host(None, "::", Some("2001:db8::8")),
+            "2001:db8::8"
+        );
+        assert_eq!(
+            select_reported_host(None, "0.0.0.0", Some("2001:db8::8")),
+            "0.0.0.0"
+        );
+        assert_eq!(
+            select_reported_host(None, "0.0.0.0", Some("203.0.113.8")),
+            "203.0.113.8"
+        );
     }
 
     #[test]

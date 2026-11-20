@@ -417,16 +417,10 @@ impl DesiredTunnel {
             bail!("invalid listen IP address: {listen}");
         }
 
-        if let Some(host) = self.public_host() {
-            let host = host.trim();
-            if host.is_empty()
-                || host.contains(':')
-                || host.contains('/')
-                || host.contains('*')
-                || host.chars().any(char::is_whitespace)
-            {
-                bail!("invalid public host: {host}");
-            }
+        if let Some(host) = self.public_host()
+            && !valid_public_host(host)
+        {
+            bail!("invalid public host: {}", host.trim());
         }
 
         if let Some(credentials) = self.credentials() {
@@ -574,6 +568,26 @@ impl DesiredTunnel {
     }
 }
 
+fn valid_public_host(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > 253 {
+        return false;
+    }
+    if trimmed.starts_with('[') || trimmed.ends_with(']') {
+        if !(trimmed.starts_with('[') && trimmed.ends_with(']')) {
+            return false;
+        }
+        return IpAddr::from_str(&trimmed[1..trimmed.len() - 1]).is_ok_and(|addr| addr.is_ipv6());
+    }
+    if IpAddr::from_str(trimmed).is_ok() {
+        return true;
+    }
+    !(trimmed.contains(':')
+        || trimmed.contains('/')
+        || trimmed.contains('*')
+        || trimmed.chars().any(|c| c.is_whitespace() || c.is_control()))
+}
+
 fn valid_server_name(value: &str) -> bool {
     if value.is_empty() || value.len() > 253 {
         return false;
@@ -653,6 +667,50 @@ mod tests {
                     "expected {kind} to reject serverName {invalid:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn validates_ipv4_ipv6_and_domain_public_hosts() {
+        let with_host = |host: &str| -> DesiredTunnel {
+            serde_json::from_value(serde_json::json!({
+                "id": "tunnel_1",
+                "name": "edge-in",
+                "type": "shadowsocks",
+                "listen": "::",
+                "port": 8388,
+                "publicHost": host,
+                "method": "2022-blake3-aes-128-gcm"
+            }))
+            .unwrap()
+        };
+
+        for valid in [
+            "203.0.113.8",
+            "2001:db8::8",
+            "[2001:db8::8]",
+            "edge.example.com",
+        ] {
+            assert!(
+                with_host(valid).validate().is_ok(),
+                "expected publicHost {valid:?} to be valid"
+            );
+        }
+
+        for invalid in [
+            "",
+            "   ",
+            "203.0.113.8:8388",
+            "[203.0.113.8]",
+            "[2001:db8::8]:8388",
+            "2001:db8:::8",
+            "*.example.com",
+            "edge.example.com/path",
+        ] {
+            assert!(
+                with_host(invalid).validate().is_err(),
+                "expected publicHost {invalid:?} to be rejected"
+            );
         }
     }
 }

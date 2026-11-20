@@ -94,6 +94,8 @@ describe("tunnel config input validation and normalization", () => {
       listen: "::",
       port: 8388,
       publicHost: null,
+      publicIpv6: null,
+      subscriptionIpMode: "auto",
       options: { method: "2022-blake3-aes-128-gcm" },
       hops: [],
       subscriptionName: null,
@@ -201,6 +203,60 @@ describe("tunnel config input validation and normalization", () => {
     expect(() => validateTunnelConfigInput({ name: "ss", type: "shadowsocks", port: 8388, publicHost: "192.168.1.1" })).toThrow(
       "Invalid public host",
     );
+  });
+
+  it("normalizes IPv6 publicHost, publicIpv6, and subscriptionIpMode", () => {
+    const result = validateTunnelConfigInput({
+      name: "ss-v6",
+      type: "shadowsocks",
+      port: 8388,
+      publicHost: "[2001:db8::1]",
+      publicIpv6: "[2001:db8::2]",
+      subscriptionIpMode: "dual",
+    });
+    expect(result.publicHost).toBe("2001:db8::1");
+    expect(result.publicIpv6).toBe("2001:db8::2");
+    expect(result.subscriptionIpMode).toBe("dual");
+
+    expect(() => validateTunnelConfigInput({
+      name: "ss-v6",
+      type: "shadowsocks",
+      port: 8388,
+      publicIpv6: "203.0.113.8",
+    })).toThrow("Invalid public IPv6");
+    expect(() => validateTunnelConfigInput({
+      name: "ss-v6",
+      type: "shadowsocks",
+      port: 8388,
+      publicIpv6: "fe80::1",
+    })).toThrow("Invalid public IPv6");
+    expect(() => validateTunnelConfigInput({
+      name: "ss-v6",
+      type: "shadowsocks",
+      port: 8388,
+      subscriptionIpMode: "v6-only",
+    })).toThrow("Invalid subscription IP mode");
+  });
+
+  it("validates dual-stack observed IP fields in reports", () => {
+    expect(() => validateReport({
+      ...report(undefined),
+      observedIpv4: "203.0.113.8",
+      observedIpv6: "2001:db8::8",
+    })).not.toThrow();
+    expect(() => validateReport({
+      ...report(undefined),
+      observedIpv4: null,
+      observedIpv6: null,
+    })).not.toThrow();
+    expect(() => validateReport({
+      ...report(undefined),
+      observedIpv4: "2001:db8::8",
+    })).toThrow("Invalid observedIpv4");
+    expect(() => validateReport({
+      ...report(undefined),
+      observedIpv6: "203.0.113.8",
+    })).toThrow("Invalid observedIpv6");
   });
 
   it("accepts and rejects hop lists", () => {

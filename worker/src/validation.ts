@@ -1,5 +1,13 @@
 import { base64UrlToBytes } from "./crypto";
-import { validFrontendAddress, validIpAddress, validServerName, validWebSocketPath } from "./endpoints";
+import {
+  normalizeFrontendAddress,
+  normalizePublicIpv6,
+  observedIpv4,
+  observedIpv6,
+  validIpAddress,
+  validServerName,
+  validWebSocketPath,
+} from "./endpoints";
 import { HttpError } from "./http";
 import type {
   ConfigApplyErrorCode,
@@ -8,6 +16,7 @@ import type {
   EnrollmentBody,
   HopRef,
   ReportBody,
+  SubscriptionIpMode,
   TunnelBody,
   TunnelConfigRow,
 } from "./types";
@@ -37,6 +46,12 @@ const TUIC_CONGESTION: Record<string, true> = {
   bbr: true,
   cubic: true,
   new_reno: true,
+};
+const SUBSCRIPTION_IP_MODES: Record<SubscriptionIpMode, true> = {
+  auto: true,
+  ipv4: true,
+  ipv6: true,
+  dual: true,
 };
 
 function text(value: unknown, name: string, max = 255): asserts value is string {
@@ -115,6 +130,16 @@ export function validateReport(body: ReportBody): void {
       throw new HttpError(400, "Invalid configApplyError");
     }
   }
+  if (body.observedIpv4 !== undefined && body.observedIpv4 !== null) {
+    if (typeof body.observedIpv4 !== "string" || !observedIpv4(body.observedIpv4)) {
+      throw new HttpError(400, "Invalid observedIpv4");
+    }
+  }
+  if (body.observedIpv6 !== undefined && body.observedIpv6 !== null) {
+    if (typeof body.observedIpv6 !== "string" || !observedIpv6(body.observedIpv6)) {
+      throw new HttpError(400, "Invalid observedIpv6");
+    }
+  }
 }
 
 export interface NormalizedTunnelConfigInput {
@@ -123,6 +148,8 @@ export interface NormalizedTunnelConfigInput {
   listen: string;
   port: number;
   publicHost: string | null;
+  publicIpv6: string | null;
+  subscriptionIpMode: SubscriptionIpMode;
   options: Record<string, unknown>;
   hops: HopRef[];
   subscriptionName: string | null;
@@ -177,9 +204,29 @@ export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfi
     if (typeof body.publicHost !== "string") throw new HttpError(400, "Invalid public host");
     const trimmedPublicHost = body.publicHost.trim();
     if (trimmedPublicHost.length > 0) {
-      if (!validFrontendAddress(trimmedPublicHost)) throw new HttpError(400, "Invalid public host");
-      publicHost = trimmedPublicHost;
+      const normalized = normalizeFrontendAddress(trimmedPublicHost);
+      if (!normalized) throw new HttpError(400, "Invalid public host");
+      publicHost = normalized;
     }
+  }
+
+  let publicIpv6: string | null = null;
+  if (body.publicIpv6 !== undefined && body.publicIpv6 !== null) {
+    if (typeof body.publicIpv6 !== "string") throw new HttpError(400, "Invalid public IPv6");
+    const trimmedPublicIpv6 = body.publicIpv6.trim();
+    if (trimmedPublicIpv6.length > 0) {
+      const normalized = normalizePublicIpv6(trimmedPublicIpv6);
+      if (!normalized) throw new HttpError(400, "Invalid public IPv6");
+      publicIpv6 = normalized;
+    }
+  }
+
+  let subscriptionIpMode: SubscriptionIpMode = "auto";
+  if (body.subscriptionIpMode !== undefined && body.subscriptionIpMode !== null) {
+    if (typeof body.subscriptionIpMode !== "string" || !SUBSCRIPTION_IP_MODES[body.subscriptionIpMode as SubscriptionIpMode]) {
+      throw new HttpError(400, "Invalid subscription IP mode");
+    }
+    subscriptionIpMode = body.subscriptionIpMode as SubscriptionIpMode;
   }
 
   let options: Record<string, unknown> = {};
@@ -211,8 +258,9 @@ export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfi
       if (typeof body.host !== "string") throw new HttpError(400, "Invalid VMess host");
       const trimmedHost = body.host.trim();
       if (trimmedHost.length > 0) {
-        if (!validFrontendAddress(trimmedHost)) throw new HttpError(400, "Invalid VMess host");
-        host = trimmedHost;
+        const normalizedHost = normalizeFrontendAddress(trimmedHost);
+        if (!normalizedHost) throw new HttpError(400, "Invalid VMess host");
+        host = normalizedHost;
       }
     }
     options = { path: rawPath, host };
@@ -220,7 +268,7 @@ export function validateTunnelConfigInput(input: unknown): NormalizedTunnelConfi
 
   const hops = parseHopRefs(body.hops);
   const subscriptionName = parseSubscriptionName(body.subscriptionName);
-  return { name, type, listen, port, publicHost, options, hops, subscriptionName };
+  return { name, type, listen, port, publicHost, publicIpv6, subscriptionIpMode, options, hops, subscriptionName };
 }
 
 const HOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;

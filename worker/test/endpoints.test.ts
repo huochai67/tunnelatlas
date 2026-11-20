@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { externallyReachableEndpoint, observedAddress, parseOriginEndpoint, validFrontendAddress, validIpAddress, validWebSocketPath } from "../src/endpoints";
+import {
+  externallyReachableEndpoint,
+  listenSupportsIpv4,
+  listenSupportsIpv6,
+  normalizeFrontendAddress,
+  normalizePublicIpv6,
+  observedAddress,
+  parseOriginEndpoint,
+  validFrontendAddress,
+  validIpAddress,
+  validWebSocketPath,
+} from "../src/endpoints";
 
 describe("externally reachable endpoints", () => {
   it("replaces wildcard listeners with the reporting agent public IPv4 address", () => {
@@ -7,8 +18,11 @@ describe("externally reachable endpoints", () => {
     expect(externallyReachableEndpoint("0.0.0.0:8388", "203.0.113.8")).toBe("203.0.113.8:8388");
   });
 
-  it("brackets public IPv6 addresses", () => {
+  it("brackets public IPv6 addresses and avoids putting IPv6 on IPv4-only listeners", () => {
     expect(externallyReachableEndpoint("[::]:443", "2001:db8::8")).toBe("[2001:db8::8]:443");
+    expect(externallyReachableEndpoint("0.0.0.0:8388", "2001:db8::8")).toBe("0.0.0.0:8388");
+    expect(externallyReachableEndpoint("[::]:443", "2001:db8::8", "203.0.113.8", "2001:db8::8")).toBe("203.0.113.8:443");
+    expect(externallyReachableEndpoint("0.0.0.0:8388", "2001:db8::8", "203.0.113.8", "2001:db8::8")).toBe("203.0.113.8:8388");
   });
 
   it("preserves explicit hosts and ignores invalid connecting addresses", () => {
@@ -124,5 +138,19 @@ describe("ip address validation", () => {
     expect(validIpAddress("256.0.0.1")).toBe(false);
     expect(validIpAddress("1.2.3")).toBe(false);
     expect(validIpAddress("::g")).toBe(false);
+  });
+
+  it("normalizes bracketed public IPv6 and rejects private IPv4-mapped IPv6", () => {
+    expect(normalizeFrontendAddress("[2001:db8::1]")).toBe("2001:db8::1");
+    expect(normalizePublicIpv6("[2001:db8::1]")).toBe("2001:db8::1");
+    expect(normalizePublicIpv6("203.0.113.1")).toBeNull();
+    expect(normalizePublicIpv6("::ffff:127.0.0.1")).toBeNull();
+    expect(normalizePublicIpv6("fe80::1")).toBeNull();
+    expect(listenSupportsIpv4("::")).toBe(true);
+    expect(listenSupportsIpv6("::")).toBe(true);
+    expect(listenSupportsIpv4("0.0.0.0")).toBe(true);
+    expect(listenSupportsIpv6("0.0.0.0")).toBe(false);
+    expect(listenSupportsIpv4("2001:db8::1")).toBe(false);
+    expect(listenSupportsIpv6("2001:db8::1")).toBe(true);
   });
 });

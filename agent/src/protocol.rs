@@ -56,6 +56,8 @@ pub struct ReportRequest<'a> {
     pub applied_config_version: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_apply_error: Option<ConfigApplyErrorCode>,
+    pub observed_ipv4: Option<&'a str>,
+    pub observed_ipv6: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -93,7 +95,18 @@ pub struct ReportResponse {
     pub server_time: String,
     #[serde(default)]
     pub observed_address: Option<String>,
+    #[serde(default)]
+    pub observed_ipv4: Option<String>,
+    #[serde(default)]
+    pub observed_ipv6: Option<String>,
     pub desired_config: DesiredConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IpProbeResponse {
+    #[serde(default)]
+    pub ip: Option<String>,
 }
 
 #[cfg(test)]

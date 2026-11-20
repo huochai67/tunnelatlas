@@ -154,7 +154,7 @@ for value in "$SERVER_URL" "$SING_BOX_BINARY" "$VERSION" "$REPOSITORY"; do
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "option values must fit on one line"
 done
 [[ "$ENROLLMENT_TOKEN" != *$'\n'* && "$ENROLLMENT_TOKEN" != *$'\r'* ]] || die "enrollment token must fit on one line"
-if [[ "$SERVER_URL" != https://* && ! "$SERVER_URL" =~ ^http://(localhost|127\.0\.0\.1)([:/]|$) ]]; then
+if [[ "$SERVER_URL" != https://* && ! "$SERVER_URL" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])([:/]|$) ]]; then
   die "--server-url must use HTTPS outside localhost"
 fi
 

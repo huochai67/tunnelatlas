@@ -19,6 +19,7 @@ const els = {
   tunnelId: $("#tunnel-id"), tunnelNodeId: $("#tunnel-node-id"), tunnelNodeSelect: $("#tunnel-node-select"),
   tunnelName: $("#tunnel-name"), tunnelType: $("#tunnel-type"), tunnelPort: $("#tunnel-port"),
   tunnelListen: $("#tunnel-listen"), tunnelPublicHost: $("#tunnel-public-host"),
+  tunnelPublicIpv6: $("#tunnel-public-ipv6"), tunnelIpMode: $("#tunnel-ip-mode"),
   tunnelSubscriptionName: $("#tunnel-subscription-name"),
   tunnelSsMethod: $("#tunnel-ss-method"), tunnelServerName: $("#tunnel-server-name"),
   tunnelTuicCc: $("#tunnel-tuic-cc"), tunnelVmessPath: $("#tunnel-vmess-path"), tunnelVmessHost: $("#tunnel-vmess-host"),
@@ -36,6 +37,13 @@ const APPLY_ERROR_LABELS = {
   sing_box_validation_failed: "sing-box 配置校验失败",
   sing_box_start_failed: "sing-box 启动失败",
   local_apply_failed: "本地应用配置失败",
+};
+
+const IP_MODE_LABELS = {
+  auto: "",
+  ipv4: "仅 IPv4",
+  ipv6: "仅 IPv6",
+  dual: "双栈 v4+v6",
 };
 
 async function api(path, options = {}) {
@@ -142,6 +150,17 @@ function nodeSyncBadge(node) {
   return `<span class="sync-badge pending">待应用 (v${node.appliedConfigVersion} → v${node.configVersion})</span>`;
 }
 
+function nodeStackBadges(node) {
+  const badges = [];
+  if (node.observedIpv4) {
+    badges.push(`<span class="stack-badge v4" title="${escapeAttr(node.observedIpv4)}">v4</span>`);
+  }
+  if (node.observedIpv6) {
+    badges.push(`<span class="stack-badge v6" title="${escapeAttr(node.observedIpv6)}">v6</span>`);
+  }
+  return badges.length ? `<div class="stack-badges">${badges.join("")}</div>` : "";
+}
+
 function renderNodes(nodes) {
   const filtered = nodes.filter((node) => {
     if (state.nodeStatusFilter === "all") return true;
@@ -154,7 +173,7 @@ function renderNodes(nodes) {
   }
   els.nodes.innerHTML = filtered.map((node) => `<div class="agent-item">
     <span class="node-icon">${escapeHtml((node.name || "N").slice(0, 2).toUpperCase())}</span>
-    <div class="agent-name"><strong>${escapeHtml(node.name)}</strong><span>${escapeHtml(node.id)}</span></div>
+    <div class="agent-name"><strong>${escapeHtml(node.name)}</strong><span>${escapeHtml(node.id)}</span>${nodeStackBadges(node)}</div>
     <div class="agent-meta">
       <strong>${node.tunnelCount || 0} 条隧道</strong>
       <span>${node.agentVersion ? `Agent v${escapeHtml(node.agentVersion)}` : "尚未接入"}</span>
@@ -206,16 +225,27 @@ function cloudflareCell(tunnel) {
 function subscriptionCell(tunnel) {
   const isHidden = !tunnel.subscriptionEnabled;
   const chip = `<span class="sub-status${isHidden ? " is-hidden" : ""}">${isHidden ? "已从订阅隐藏" : "参与订阅下发"}</span>`;
-  if (state.mode !== "admin" || !tunnel.managed) return chip;
+  const modeLabel = tunnel.managed && tunnel.subscriptionIpMode && IP_MODE_LABELS[tunnel.subscriptionIpMode]
+    ? `<span class="sub-ip-mode ${escapeAttr(tunnel.subscriptionIpMode)}">${escapeHtml(IP_MODE_LABELS[tunnel.subscriptionIpMode])}</span>`
+    : "";
+  if (state.mode !== "admin" || !tunnel.managed) return `<div class="sub-cell">${chip}${modeLabel}</div>`;
   const button = `<button class="sub-toggle${isHidden ? " is-hidden" : ""}" type="button" data-tunnel-action="subscription" data-node-id="${escapeAttr(tunnel.nodeId)}" data-tunnel-id="${escapeAttr(tunnel.id)}">${isHidden ? "恢复下发" : "隐藏下发"}</button>`;
-  return `<div class="sub-cell">${chip}${button}</div>`;
+  return `<div class="sub-cell">${chip}${modeLabel}${button}</div>`;
+}
+
+function endpointCell(tunnel) {
+  const primary = escapeHtml(tunnel.endpoint || "—");
+  if (tunnel.ipv6Endpoint && tunnel.ipv6Endpoint !== tunnel.endpoint) {
+    return `${primary}<small class="endpoint-v6">v6: ${escapeHtml(tunnel.ipv6Endpoint)}</small>`;
+  }
+  return primary;
 }
 
 function renderTunnels(tunnels) {
   const query = els.search.value.trim().toLowerCase();
   const nodeId = els.nodeFilter.value;
   const filtered = tunnels.filter((tunnel) => (nodeId === "all" || tunnel.nodeId === nodeId)
-    && (!query || [tunnel.name, tunnel.endpoint, tunnel.type || tunnel.protocol, tunnel.nodeName].join(" ").toLowerCase().includes(query)));
+    && (!query || [tunnel.name, tunnel.endpoint, tunnel.ipv6Endpoint || "", tunnel.type || tunnel.protocol, tunnel.nodeName].join(" ").toLowerCase().includes(query)));
   if (!filtered.length) {
     els.tunnels.innerHTML = `<tr><td colspan="9" class="table-empty">没有符合条件的隧道</td></tr>`;
     return;
@@ -249,7 +279,7 @@ function renderTunnels(tunnels) {
       <td><span class="table-status ${escapeAttr(statusClass)}">${escapeHtml(statusLabel)}</span></td>
       <td class="tunnel-name"><strong>${escapeHtml(tunnel.name)}</strong><small>${escapeHtml(tunnel.nodeName)}</small></td>
       <td>${escapeHtml(directionLabel)} / ${escapeHtml(protocolLabel)}${escapeHtml(hopLabel)}</td>
-      <td class="endpoint">${escapeHtml(tunnel.endpoint || "—")}</td>
+      <td class="endpoint">${endpointCell(tunnel)}</td>
       <td>${escapeHtml(tunnel.nodeName)}</td>
       <td class="sub-column">${subscriptionCell(tunnel)}</td>
       <td class="cf-column">${cloudflareCell(tunnel)}</td>
@@ -359,6 +389,8 @@ function openTunnelDialog(mode, nodeId, tunnelId = null) {
     els.tunnelPort.value = "";
     els.tunnelListen.value = "::";
     els.tunnelPublicHost.value = "";
+    els.tunnelPublicIpv6.value = "";
+    els.tunnelIpMode.value = "auto";
     els.tunnelSubscriptionName.value = "";
     els.tunnelSsMethod.value = "2022-blake3-aes-128-gcm";
     els.tunnelServerName.value = "www.bing.com";
@@ -381,6 +413,8 @@ function openTunnelDialog(mode, nodeId, tunnelId = null) {
     els.tunnelPort.value = tunnel.port || "";
     els.tunnelListen.value = tunnel.listen || "::";
     els.tunnelPublicHost.value = tunnel.publicHost || "";
+    els.tunnelPublicIpv6.value = tunnel.publicIpv6 || "";
+    els.tunnelIpMode.value = tunnel.subscriptionIpMode || "auto";
     els.tunnelSubscriptionName.value = tunnel.subscriptionName || "";
     els.tunnelSsMethod.value = tunnel.method || "2022-blake3-aes-128-gcm";
     els.tunnelServerName.value = tunnel.serverName || (tunnel.type === "vless-reality" || tunnel.type === "anytls-reality" ? "addons.mozilla.org" : "www.bing.com");
@@ -416,9 +450,11 @@ els.tunnelForm.addEventListener("submit", async (event) => {
   const port = Number(els.tunnelPort.value);
   const listen = els.tunnelListen.value.trim() || "::";
   const publicHost = els.tunnelPublicHost.value.trim() || null;
+  const publicIpv6 = els.tunnelPublicIpv6.value.trim() || null;
+  const subscriptionIpMode = els.tunnelIpMode.value || "auto";
   const subscriptionName = els.tunnelSubscriptionName.value.trim() || null;
 
-  const payload = { name, type, port, listen, publicHost, subscriptionName, hops: selectedHops() };
+  const payload = { name, type, port, listen, publicHost, publicIpv6, subscriptionIpMode, subscriptionName, hops: selectedHops() };
   if (type === "shadowsocks") {
     payload.method = els.tunnelSsMethod.value;
   } else if (type === "hysteria2") {

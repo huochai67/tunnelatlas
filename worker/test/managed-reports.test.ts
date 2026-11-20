@@ -371,6 +371,75 @@ describe("POST /v1/agent/report desired-state reconciliation", () => {
     expect(res.status).toBe(400);
     expect((await res.json() as Record<string, unknown>).title).toBe("Invalid appliedConfigVersion");
   });
+
+  it("returns client IP on GET /v1/ip and records dual-stack observed addresses without flapping primary endpoint", async () => {
+    const { env: ipEnv } = testEnv();
+    const ipRes = await worker.fetch(new Request("https://atlas.example/v1/ip", {
+      headers: { "CF-Connecting-IP": "2001:db8::8" },
+    }), ipEnv);
+    expect(ipRes.status).toBe(200);
+    expect(await ipRes.json()).toEqual({ ip: "2001:db8::8", family: "ipv6" });
+
+    const keyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    const pubKey = bytesToBase64Url(new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey)));
+    const { env, calls } = testEnv({
+      node: {
+        id: "node_1",
+        name: "Dual Stack Node",
+        public_key: pubKey,
+        last_sequence: 0,
+        config_version: 1,
+        applied_config_version: 1,
+        config_apply_error: null,
+      },
+      tunnelConfigs: [{
+        node_id: "node_1",
+        id: "t_1",
+        name: "ss-1",
+        type: "shadowsocks",
+        listen: "::",
+        port: 8388,
+        public_host: null,
+        options_json: JSON.stringify({ method: "2022-blake3-aes-128-gcm" }),
+        credential_generation: 1,
+        subscription_enabled: 1,
+      }],
+    });
+
+    const signed = await makeSignedReport({
+      agentVersion: "0.4.0",
+      appliedConfigVersion: 1,
+      observedIpv4: "203.0.113.8",
+      observedIpv6: "2001:db8::8",
+      tunnels: [{
+        id: "t_1",
+        name: "ss-1",
+        kind: "sing-box/inbound",
+        endpoint: "[::]:8388",
+        protocol: "shadowsocks",
+        status: "healthy",
+        authentication: { method: "2022-blake3-aes-128-gcm", password: "pwd" },
+      }],
+    }, keyPair, "node_1", 1);
+    const headers = new Headers(signed.headers);
+    headers.set("CF-Connecting-IP", "2001:db8::8");
+    const req = new Request(signed, { headers });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(200);
+    const data = await res.json() as {
+      observedAddress: string | null;
+      observedIpv4: string | null;
+      observedIpv6: string | null;
+    };
+    expect(data.observedAddress).toBe("203.0.113.8");
+    expect(data.observedIpv4).toBe("203.0.113.8");
+    expect(data.observedIpv6).toBe("2001:db8::8");
+
+    const nodeUpdate = calls.find((c) => c.sql.includes("observed_ipv4 = ?, observed_ipv6 = ?"));
+    expect(nodeUpdate).toBeDefined();
+    expect(nodeUpdate?.values).toContain("203.0.113.8");
+    expect(nodeUpdate?.values).toContain("2001:db8::8");
+  });
 });
 
 describe("GET /v1/admin/overview with managed and legacy tunnels", () => {

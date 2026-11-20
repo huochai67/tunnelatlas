@@ -1,4 +1,9 @@
-use std::path::Path;
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    path::Path,
+    str::FromStr,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -11,25 +16,51 @@ use crate::{
     config::Config,
     identity::Identity,
     protocol::{
-        ConfigApplyErrorCode, EnrollmentRequest, EnrollmentResponse, Platform, ReportRequest,
-        ReportResponse, TunnelReport,
+        ConfigApplyErrorCode, EnrollmentRequest, EnrollmentResponse, IpProbeResponse, Platform,
+        ReportRequest, ReportResponse, TunnelReport,
     },
     sing_box::ObservedTunnel,
 };
 
+const USER_AGENT: &str = concat!("tunnelatlasd/", env!("CARGO_PKG_VERSION"));
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub struct AtlasClient {
     http: Client,
+    http_v4: Option<Client>,
+    http_v6: Option<Client>,
     server_url: String,
 }
 
 impl AtlasClient {
     pub fn new(server_url: &str) -> Result<Self> {
+        let http = Client::builder().user_agent(USER_AGENT).build()?;
+        let http_v4 = Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(PROBE_TIMEOUT)
+            .local_address(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            .build()
+            .ok();
+        let http_v6 = Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(PROBE_TIMEOUT)
+            .local_address(IpAddr::V6(Ipv6Addr::UNSPECIFIED))
+            .build()
+            .ok();
         Ok(Self {
-            http: Client::builder()
-                .user_agent(concat!("tunnelatlasd/", env!("CARGO_PKG_VERSION")))
-                .build()?,
+            http,
+            http_v4,
+            http_v6,
             server_url: server_url.trim_end_matches('/').to_owned(),
         })
+    }
+
+    pub async fn probe_addresses(&self) -> (Option<String>, Option<String>) {
+        let (v4, v6) = tokio::join!(
+            probe_family(self.http_v4.as_ref(), &self.server_url, false),
+            probe_family(self.http_v6.as_ref(), &self.server_url, true),
+        );
+        (v4, v6)
     }
 
     pub async fn enroll(
@@ -66,12 +97,15 @@ impl AtlasClient {
         response.json().await.context("invalid enrollment response")
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn report(
         &self,
         config: &Config,
         tunnels: &[ObservedTunnel],
         applied_config_version: Option<u64>,
         config_apply_error: Option<ConfigApplyErrorCode>,
+        observed_ipv4: Option<&str>,
+        observed_ipv6: Option<&str>,
         identity: &mut Identity,
         identity_path: &Path,
     ) -> Result<ReportResponse> {
@@ -84,6 +118,8 @@ impl AtlasClient {
             tunnels: tunnels.iter().map(TunnelReport::from).collect(),
             applied_config_version,
             config_apply_error,
+            observed_ipv4,
+            observed_ipv6,
         };
         let bytes = serde_json::to_vec(&body)?;
         let body_hash = hex::encode(Sha256::digest(&bytes));
@@ -111,5 +147,27 @@ impl AtlasClient {
             );
         }
         response.json().await.context("invalid report response")
+    }
+}
+
+async fn probe_family(client: Option<&Client>, server_url: &str, expect_v6: bool) -> Option<String> {
+    let client = client?;
+    let url = format!("{server_url}/v1/ip");
+    let response = client.get(url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let payload: IpProbeResponse = response.json().await.ok()?;
+    let raw = payload.ip?;
+    let trimmed = raw.trim();
+    let bare = trimmed
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    let parsed = IpAddr::from_str(bare).ok()?;
+    if parsed.is_ipv6() == expect_v6 {
+        Some(bare.to_owned())
+    } else {
+        None
     }
 }

@@ -164,12 +164,16 @@ async fn report_once(
         (vec![], None)
     };
 
+    let (probed_ipv4, probed_ipv6) = client.probe_addresses().await;
+
     let response = client
         .report(
             &config,
             &initial_tunnels,
             initial_version,
             runtime.last_apply_error,
+            probed_ipv4.as_deref(),
+            probed_ipv6.as_deref(),
             &mut identity,
             identity_path,
         )
@@ -177,8 +181,17 @@ async fn report_once(
 
     let mut supervisor = SingBoxSupervisor::new(config.sing_box.clone());
     let mut current_runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
-    if response.observed_address.is_some() {
-        current_runtime.observed_address = response.observed_address.clone();
+    if response.observed_address.is_some()
+        || response.observed_ipv4.is_some()
+        || response.observed_ipv6.is_some()
+        || probed_ipv4.is_some()
+        || probed_ipv6.is_some()
+    {
+        if response.observed_address.is_some() {
+            current_runtime.observed_address = response.observed_address.clone();
+        }
+        current_runtime.observed_ipv4 = response.observed_ipv4.clone().or(probed_ipv4.clone());
+        current_runtime.observed_ipv6 = response.observed_ipv6.clone().or(probed_ipv6.clone());
         let _ = current_runtime.save(&runtime_path);
     }
 
@@ -215,6 +228,8 @@ async fn report_once(
                 &rendered.tunnels,
                 Some(response.desired_config.version),
                 None,
+                current_runtime.observed_ipv4.as_deref(),
+                current_runtime.observed_ipv6.as_deref(),
                 &mut identity,
                 identity_path,
             )
@@ -324,13 +339,29 @@ async fn run(
                     (vec![], None)
                 };
 
-                match client.report(&config, &tunnels, applied_version, runtime.last_apply_error, &mut identity, &identity_path).await {
+                let (probed_ipv4, probed_ipv6) = client.probe_addresses().await;
+
+                match client
+                    .report(
+                        &config,
+                        &tunnels,
+                        applied_version,
+                        runtime.last_apply_error,
+                        probed_ipv4.as_deref(),
+                        probed_ipv6.as_deref(),
+                        &mut identity,
+                        &identity_path,
+                    )
+                    .await
+                {
                     Ok(response) => {
                         let mut runtime = RuntimeState::load(&runtime_path).unwrap_or_default();
                         if response.observed_address.is_some() {
                             runtime.observed_address = response.observed_address;
-                            let _ = runtime.save(&runtime_path);
                         }
+                        runtime.observed_ipv4 = response.observed_ipv4.or(probed_ipv4);
+                        runtime.observed_ipv6 = response.observed_ipv6.or(probed_ipv6);
+                        let _ = runtime.save(&runtime_path);
                         println!("report accepted: sequence={}", response.accepted_sequence);
 
                         let need_converge = match &runtime.applied_desired_config {
@@ -367,6 +398,8 @@ async fn run(
                                         &outcome.tunnels,
                                         Some(response.desired_config.version),
                                         None,
+                                        runtime.observed_ipv4.as_deref(),
+                                        runtime.observed_ipv6.as_deref(),
                                         &mut identity,
                                         &identity_path,
                                     ).await;
