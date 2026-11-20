@@ -150,7 +150,11 @@ impl AtlasClient {
     }
 }
 
-async fn probe_family(client: Option<&Client>, server_url: &str, expect_v6: bool) -> Option<String> {
+async fn probe_family(
+    client: Option<&Client>,
+    server_url: &str,
+    expect_v6: bool,
+) -> Option<String> {
     let client = client?;
     let url = format!("{server_url}/v1/ip");
     let response = client.get(url).send().await.ok()?;
